@@ -1,0 +1,1 @@
+ALTER TABLE `sessions` ADD `handoff` integer DEFAULT 0;

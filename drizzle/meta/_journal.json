@@ -71,6 +71,13 @@
       "when": 1773500000000,
       "tag": "0009_blue_proteus",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1778341150681,
+      "tag": "0010_remarkable_malice",
+      "breakpoints": true
     }
   ]
 }

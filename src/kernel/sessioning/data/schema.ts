@@ -19,6 +19,8 @@ export const sessions = sqliteTable("sessions", {
   first_message: text("first_message").notNull().default(""),
   /** Runner-specific session/thread id (e.g. Codex thread id) for resume. */
   runner_session_id: text("runner_session_id"),
+  /** Whether this session was created via handoff from an external Claude Code instance. */
+  handoff: integer("handoff").default(0),
   /** Epoch milliseconds of the most recent message, or null if no messages yet. */
   last_message_created_at: integer("last_message_created_at"),
   /** Epoch milliseconds when the session was created. */

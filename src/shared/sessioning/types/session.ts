@@ -19,6 +19,8 @@ export const Session = z.object({
   first_message: z.string(),
   /** Runner-specific session/thread id (e.g. Codex thread id), if available. */
   runner_session_id: z.string().optional().nullable(),
+  /** Whether this session was created via handoff from an external Claude Code instance. */
+  handoff: z.boolean().default(false),
   /** Epoch milliseconds of the most recent message, or null if no messages yet. */
   last_message_created_at: z.number().nullable(),
   /** Epoch milliseconds when the session was created. */

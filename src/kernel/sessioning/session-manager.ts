@@ -190,7 +190,8 @@ export class SessionManager {
       .from(sessions)
       .orderBy(desc(sessions.updated_at))
       .limit(limit)
-      .all();
+      .all()
+      .map((row) => this._toSessionEntity(row));
   }
 
   /**
@@ -254,6 +255,13 @@ export class SessionManager {
         and(eq(sessions.id, sessionId), isNull(sessions.runner_session_id)),
       )
       .run();
+  }
+
+  private _toSessionEntity(row: typeof sessions.$inferSelect): SessionEntity {
+    return {
+      ...row,
+      handoff: row.handoff === 1,
+    };
   }
 
   private _attachWriter(session: Session, sessionId: string): void {

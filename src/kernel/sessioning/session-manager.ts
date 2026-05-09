@@ -145,6 +145,56 @@ export class SessionManager {
   }
 
   /**
+   * Creates a session for a handoff from an external Claude Code instance.
+   * The session already exists in Claude's native store, so it is created
+   * with isNewSession: false and runnerSessionId set to signal --resume.
+   *
+   * @param sessionId - The Claude Code session identifier.
+   * @param options - Optional agent_type, cwd, and channel_id.
+   * @returns A Session instance with isNewSession: false.
+   * @throws SessionAlreadyExistsError if the session already exists.
+   */
+  async createHandoffSession(
+    sessionId: string,
+    options?: SessionResolveOptions,
+  ): Promise<Session> {
+    if (this.existsSession(sessionId)) {
+      throw new SessionAlreadyExistsError(sessionId);
+    }
+
+    const agentType = options?.agentType ?? config.agents.default.type;
+    const cwd = options?.cwd ?? config.paths.home;
+    const channelId = options?.channelId ?? config.messaging.default_channel_id;
+    const now = Date.now();
+
+    this._db
+      .insert(sessions)
+      .values({
+        id: sessionId,
+        agent_type: agentType,
+        cwd,
+        channel_id: channelId,
+        runner_session_id: sessionId,
+        first_message: "Session handed off from Claude Code",
+        handoff: 1,
+        last_message_created_at: null,
+        created_at: now,
+        updated_at: now,
+      })
+      .run();
+
+    this._logger.info(`Creating handoff session: ${sessionId}`);
+    const session = new Session(sessionId, agentType, {
+      isNewSession: false,
+      cwd,
+      runnerSessionId: sessionId,
+    });
+    this._attachWriter(session, sessionId);
+
+    return session;
+  }
+
+  /**
    * Resumes an existing session by reading its metadata from the database.
    * @param sessionId - The session identifier.
    * @param options - Optional overrides for agent_type and cwd.

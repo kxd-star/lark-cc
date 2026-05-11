@@ -23,6 +23,9 @@ import type {
   MarkdownElement,
 } from "./types";
 
+/** Maximum elements or components in one Feishu card. */
+const MAX_FEISHU_CARD_ELEMENTS = 200;
+
 /**
  * Render assistant message content as a Feishu interactive card.
  * @param messageContent - Array of content blocks (thinking, tool_use, text).
@@ -107,10 +110,10 @@ export async function renderMessageCard(
     }
   }
 
-  const stepCount = stepPanel.elements.length;
-  if (stepCount > 0) {
+  const totalStepCount = stepPanel.elements.length;
+  if (totalStepCount > 0) {
     const stepCountText =
-      stepCount + " " + (stepCount === 1 ? "step" : "steps");
+      totalStepCount + " " + (totalStepCount === 1 ? "step" : "steps");
     if (streaming) {
       stepPanel.header.title.content = `Working on it (${stepCountText})`;
       card.config!.summary.content = `Working on it (${stepCountText})`;
@@ -142,7 +145,44 @@ export async function renderMessageCard(
       },
     });
   }
+  _trimCardElements(card);
   return card;
+}
+
+/** Trim old step elements until the card fits Feishu's card limit. */
+function _trimCardElements(card: Card) {
+  let elementCount = _countElements(card);
+  const stepPanel = card.body.elements.find(
+    (element): element is CollapsiblePanel => element.tag === "collapsible_panel",
+  );
+  if (!stepPanel || elementCount <= MAX_FEISHU_CARD_ELEMENTS) {
+    return;
+  }
+
+  while (
+    stepPanel.elements.length > 0 &&
+    elementCount > MAX_FEISHU_CARD_ELEMENTS
+  ) {
+    const removedElement = stepPanel.elements.shift();
+    elementCount -= _countElements(removedElement);
+  }
+}
+
+function _countElements(value: unknown): number {
+  if (!value || typeof value !== "object") {
+    return 0;
+  }
+
+  const item = value as Record<string, unknown>;
+  const self = typeof item.tag === "string" ? 1 : 0;
+  return Object.values(item).reduce<number>(
+    (count, child) =>
+      count +
+      (Array.isArray(child)
+        ? child.reduce<number>((sum, entry) => sum + _countElements(entry), 0)
+        : _countElements(child)),
+    self,
+  );
 }
 
 async function _uploadMessageResource(

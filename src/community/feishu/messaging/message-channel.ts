@@ -12,6 +12,7 @@ import {
   createLogger,
   uuid,
   type AssistantMessage,
+  type CardActionPayload,
   type MessageChannel,
   type MessageChannelEventTypes,
   type UserMessage,
@@ -96,7 +97,10 @@ export class FeishuMessageChannel
       eventDispatcher: new EventDispatcher({}).register({
         "im.message.receive_v1": this._handleMessageReceive,
         "im.message.recalled_v1": this._handleMessageRecall,
-      }),
+        // card.action.trigger is supported at runtime via WebSocket
+        "card.action.trigger": this._handleCardAction,
+      // eslint-disable-next-line no-unused-vars, @typescript-eslint/no-explicit-any
+      } as Record<string, (data: any) => void | Promise<void>>),
     });
   }
 
@@ -113,6 +117,7 @@ export class FeishuMessageChannel
 
     const card = await renderMessageCard(firstMessageContent, {
       streaming,
+      sessionId: message.session_id,
       uploadImage: this.uploadImage.bind(this),
     });
     if (!streaming) {
@@ -125,7 +130,7 @@ export class FeishuMessageChannel
       data: {
         msg_type: "interactive",
         content: JSON.stringify(card),
-        reply_in_thread: true,
+        reply_in_thread: false,
       },
     });
     if (!replyMessage) {
@@ -134,7 +139,9 @@ export class FeishuMessageChannel
 
     const { thread_id: threadId } = replyMessage;
     const sessionId = message.session_id;
-    this._mapThreadToSession(threadId!, sessionId);
+    if (threadId) {
+      this._mapThreadToSession(threadId, sessionId);
+    }
 
     await this._sendRemainingChunks(replyMessage.message_id!, remainingChunks);
 
@@ -164,6 +171,7 @@ export class FeishuMessageChannel
 
     const card = await renderMessageCard(firstMessageContent, {
       streaming: false,
+      sessionId: message.session_id,
       uploadImage: this.uploadImage.bind(this),
     });
     this._logOutboundMessage(message.session_id, message.content);
@@ -209,7 +217,7 @@ export class FeishuMessageChannel
           text: `[${emojis[Math.floor(Math.random() * emojis.length)]}] Reply here to continue the conversation`,
         }),
         msg_type: "text",
-        reply_in_thread: true,
+        reply_in_thread: false,
       },
     });
     if (replyData) {
@@ -236,6 +244,7 @@ export class FeishuMessageChannel
 
     const card = await renderMessageCard(firstMessageContent, {
       streaming,
+      sessionId: message.session_id,
       uploadImage: this.uploadImage.bind(this),
     });
     if (!streaming) {
@@ -459,7 +468,7 @@ export class FeishuMessageChannel
         data: {
           msg_type: "interactive",
           content: JSON.stringify(chunkCard),
-          reply_in_thread: true,
+          reply_in_thread: false,
         },
       });
     }
@@ -500,7 +509,7 @@ export class FeishuMessageChannel
           data: {
             msg_type: "file",
             content: JSON.stringify({ file_key: fileKey }),
-            reply_in_thread: true,
+            reply_in_thread: false,
           },
         });
         this._logger.info(`Sent file ${filePath} as Feishu attachment`);
@@ -524,7 +533,7 @@ export class FeishuMessageChannel
           content: JSON.stringify({
             text: "抱歉，这条消息更新失败了，请稍后重试。",
           }),
-          reply_in_thread: true,
+          reply_in_thread: false,
         },
       });
     } catch (err) {
@@ -544,11 +553,37 @@ export class FeishuMessageChannel
     this._logger.info([sessionId, finalText], "Final Feishu outbound content");
   }
 
+  private _handleCardAction = async (event: {
+    action?: { value?: Record<string, string>; tag?: string };
+    open_message_id?: string;
+    open_id?: string;
+    user_id?: string;
+    message_id?: string;
+    chat_id?: string;
+  }) => {
+    const value = event.action?.value;
+    if (!value?.action || !value.session_id) return;
+
+    const payload: CardActionPayload = {
+      action: value.action,
+      sessionId: value.session_id,
+      messageId: event.open_message_id ?? event.message_id ?? "",
+      chatId: event.chat_id ?? "",
+      userId: event.open_id ?? event.user_id,
+    };
+
+    this._logger.info(
+      { action: payload.action, session_id: payload.sessionId },
+      "Card action triggered",
+    );
+    this.emit("card:action", payload);
+  };
+
   private _handleMessageReceive = async ({
     message: receivedMessage,
   }: MessageReceiveEventData) => {
-    const { message_id: messageId, thread_id: threadId } = receivedMessage;
-    const session_id = this._resolveSessionId(threadId);
+    const { message_id: messageId, thread_id: threadId, chat_id: chatId, chat_type: chatType } = receivedMessage;
+    const session_id = this._resolveSessionId(threadId, chatId, chatType);
     const userMessage: UserMessage = {
       id: messageId,
       session_id,
@@ -576,6 +611,7 @@ export class FeishuMessageChannel
   };
 
   private _threadIdToSessionId = new Map<string, string>();
+  private _chatIdToSessionId = new Map<string, string>();
 
   /** Persist a thread→session mapping to DB and update the in-memory cache. */
   private _mapThreadToSession(threadId: string, sessionId: string) {
@@ -591,12 +627,12 @@ export class FeishuMessageChannel
       .run();
   }
 
-  /** Resolve a session ID from a thread ID, falling back to DB then generating a new one. */
-  private _resolveSessionId(threadId: string | undefined): string {
-    if (threadId && this._threadIdToSessionId.has(threadId)) {
-      return this._threadIdToSessionId.get(threadId)!;
-    }
+  /** Resolve a session ID, preferring thread/chat mapping, falling back to a new one. */
+  private _resolveSessionId(threadId: string | undefined, chatId?: string, chatType?: string): string {
     if (threadId) {
+      if (this._threadIdToSessionId.has(threadId)) {
+        return this._threadIdToSessionId.get(threadId)!;
+      }
       const row = this._db
         .select({ session_id: feishuThreads.session_id })
         .from(feishuThreads)
@@ -606,6 +642,15 @@ export class FeishuMessageChannel
         this._threadIdToSessionId.set(threadId, row.session_id);
         return row.session_id;
       }
+    }
+    // For p2p chats, use chat_id to maintain session continuity
+    if (chatType === "p2p" && chatId) {
+      if (this._chatIdToSessionId.has(chatId)) {
+        return this._chatIdToSessionId.get(chatId)!;
+      }
+      const sessionId = uuid();
+      this._chatIdToSessionId.set(chatId, sessionId);
+      return sessionId;
     }
     return uuid();
   }

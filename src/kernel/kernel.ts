@@ -7,6 +7,7 @@ import {
   createLogger,
   extractTextContent,
   uuid,
+  type CardActionPayload,
   type InboundMessageTaskPayload,
   type ScheduledTaskPayload,
 } from "@/shared";
@@ -103,6 +104,7 @@ class Kernel {
     }
     this._messageGateway.on("message:inbound", this._handleInboundMessage);
     this._messageGateway.on("message:recalled", this._handleMessageRecall);
+    this._messageGateway.on("card:action", this._handleCardAction);
   }
 
   /**
@@ -164,6 +166,32 @@ class Kernel {
         "task stopped due to message recall",
       );
     }
+  };
+
+  private _handleCardAction = async (payload: CardActionPayload) => {
+    if (payload.action !== "stop_task") return;
+
+    const { sessionId, messageId } = payload;
+    const taskId = this._taskDispatcher.getRunningTaskForSession(sessionId);
+
+    if (taskId) {
+      await this._taskDispatcher.deleteTask(taskId);
+      this._logger.info(
+        { session_id: sessionId, task_id: taskId, message_id: messageId },
+        "task cancelled via card action",
+      );
+    }
+
+    // Update the card to show cancelled state
+    await this._messageGateway.updateMessageContent(
+      {
+        id: messageId,
+        session_id: sessionId,
+        role: "assistant",
+        content: [{ type: "text", text: " ⚠️ 任务已中止" }],
+      },
+      { streaming: false },
+    );
   };
 
   private _handleInboundMessageTask = async (

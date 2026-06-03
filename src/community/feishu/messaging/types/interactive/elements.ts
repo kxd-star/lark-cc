@@ -76,7 +76,25 @@ export interface CollapsiblePanel extends BaseContainer<"collapsible_panel"> {
   };
 }
 
+export interface ButtonElement extends BaseElement<"button"> {
+  tag: "button";
+  text: PlainTextElement;
+  type?: "default" | "primary" | "danger";
+  value?: Record<string, string>;
+  confirm?: {
+    title: PlainTextElement;
+    text: PlainTextElement;
+  };
+}
+
+export interface ActionElement extends BaseElement<"action"> {
+  tag: "action";
+  actions: ButtonElement[];
+  layout?: "bisected" | "trisection" | "flow";
+}
+
 export type Element =
+  | ActionElement
   | CollapsiblePanel
   | DivElement
   | IconElement

@@ -2,12 +2,22 @@ import type EventEmitter from "eventemitter3";
 
 import type { AssistantMessage, UserMessage } from "./types";
 
+export interface CardActionPayload {
+  action: string;
+  sessionId: string;
+  messageId: string;
+  chatId: string;
+  userId?: string;
+}
+
 /** Event types emitted by a message channel. */
 export interface MessageChannelEventTypes {
   // eslint-disable-next-line no-unused-vars
   "message:inbound": (message: UserMessage) => void;
   // eslint-disable-next-line no-unused-vars
   "message:recalled": (messageId: string, channelId: string) => void;
+  // eslint-disable-next-line no-unused-vars
+  "card:action": (payload: CardActionPayload) => void;
 }
 
 /** Abstract message channel for sending and receiving messages. */

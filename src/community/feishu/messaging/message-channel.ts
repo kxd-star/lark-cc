@@ -582,19 +582,40 @@ export class FeishuMessageChannel
   private _handleMessageReceive = async ({
     message: receivedMessage,
   }: MessageReceiveEventData) => {
-    const { message_id: messageId, thread_id: threadId, chat_id: chatId, chat_type: chatType } = receivedMessage;
+    const { message_id: messageId, thread_id: threadId, chat_id: chatId, chat_type: chatType, parent_id } = receivedMessage;
     const session_id = this._resolveSessionId(threadId, chatId, chatType);
+
+    const parsedContent = await this._parseMessageContent(
+      messageId,
+      receivedMessage.message_type,
+      receivedMessage.content,
+    );
+
+    // If the message is a reply to another message (引用会话), fetch the quoted message
+    if (parent_id) {
+      try {
+        const quoted = await this._client.im.v1.message.get({
+          path: { message_id: parent_id },
+        });
+        const quotedItem = quoted.data?.items?.[0];
+        if (quotedItem?.body?.content) {
+          const quotedText = await this._parseMessageContent(
+            parent_id,
+            quotedItem.msg_type ?? "text",
+            quotedItem.body.content,
+          );
+          parsedContent.text = `[引用消息]\n${quotedText.text}\n———\n${parsedContent.text}`;
+        }
+      } catch (err) {
+        this._logger.warn({ parent_id, err }, "Failed to fetch quoted message");
+      }
+    }
+
     const userMessage: UserMessage = {
       id: messageId,
       session_id,
       role: "user",
-      content: [
-        await this._parseMessageContent(
-          messageId,
-          receivedMessage.message_type,
-          receivedMessage.content,
-        ),
-      ],
+      content: [parsedContent],
     };
     this.emit("message:inbound", userMessage);
   };

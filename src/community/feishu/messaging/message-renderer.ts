@@ -16,7 +16,7 @@ import {
   type WriteToolUseMessageContent,
 } from "@/shared";
 
-import type { Card, CollapsiblePanel, DivElement } from "./types";
+import type { Card, CollapsiblePanel, DivElement, ButtonElement } from "./types";
 
 const MAX_FEISHU_CARD_ELEMENTS = 200;
 // eslint-disable-next-line no-unused-vars
@@ -234,17 +234,11 @@ export async function renderMessageCard(
   if (streaming) {
     if (sessionId) {
       bodyElements.push({
-        tag: "action",
-        actions: [
-          {
-            tag: "button",
-            text: { tag: "plain_text", content: "中止", text_color: "white" },
-            type: "danger",
-            value: { action: "stop_task", session_id: sessionId },
-          },
-        ],
-        layout: "flow",
-      });
+        tag: "button",
+        text: { tag: "plain_text", content: "中止", text_color: "white" },
+        type: "danger",
+        value: { action: "stop_task", session_id: sessionId },
+      } as ButtonElement);
     }
     bodyElements.push({
       tag: "div",

@@ -95,6 +95,7 @@ export interface ActionElement extends BaseElement<"action"> {
 
 export type Element =
   | ActionElement
+  | ButtonElement
   | CollapsiblePanel
   | DivElement
   | IconElement

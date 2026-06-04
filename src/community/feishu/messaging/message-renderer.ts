@@ -90,45 +90,45 @@ function _createStepFromTool(content: ToolUseMessageContent): DivElement {
   switch (content.name) {
     case "Agent":
     case "Task":
-      return _renderStep("运行子智能体", "robot_outlined");
+      return _renderStep("Agent — 运行子智能体", "robot_outlined");
     case "Bash": {
       const bash = content as BashToolUseMessageContent;
       return _renderStep(
-        bash.input.description ?? bash.input.command?.substring(0, 60) ?? "",
+        `Bash — ${bash.input.description ?? bash.input.command?.substring(0, 60) ?? ""}`,
         "computer_outlined",
       );
     }
     case "Edit": {
       const edit = content as EditToolUseMessageContent;
-      return _renderStep(`编辑 "${edit.input.file_path}"`, "edit_outlined");
+      return _renderStep(`Edit — ${edit.input.file_path}`, "edit_outlined");
     }
     case "Write": {
       const write = content as WriteToolUseMessageContent;
-      return _renderStep(`写入 "${write.input.file_path}"`, "edit_outlined");
+      return _renderStep(`Write — ${write.input.file_path}`, "edit_outlined");
     }
     case "Read": {
       const read = content as ReadToolUseMessageContent;
-      return _renderStep(`读取 "${read.input.file_path}"`, "file-link-bitable_outlined");
+      return _renderStep(`Read — ${read.input.file_path}`, "file-link-bitable_outlined");
     }
     case "Glob": {
       const glob = content as GlobToolUseMessageContent;
-      return _renderStep(`搜索文件 "${glob.input.pattern}"`, "card-search_outlined");
+      return _renderStep(`Glob — ${glob.input.pattern}`, "card-search_outlined");
     }
     case "Grep": {
       const grep = content as GrepToolUseMessageContent;
-      return _renderStep(`搜索内容 "${grep.input.pattern}"`, "doc-search_outlined");
+      return _renderStep(`Grep — ${grep.input.pattern}`, "doc-search_outlined");
     }
     case "WebSearch": {
       const ws = content as WebSearchToolUseMessageContent;
-      return _renderStep(`搜索 "${ws.input.query}"`, "search_outlined");
+      return _renderStep(`WebSearch — ${ws.input.query}`, "search_outlined");
     }
     case "WebFetch": {
       const wf = content as WebFetchToolUseMessageContent;
-      return _renderStep(`读取网页 "${wf.input.url}"`, "language_outlined");
+      return _renderStep(`WebFetch — ${wf.input.url}`, "language_outlined");
     }
     case "Skill": {
       const skill = content as SkillToolUseMessageContent;
-      return _renderStep(`加载 "${skill.input.skill}"`, "file-link-mindnote_outlined");
+      return _renderStep(`Skill — ${skill.input.skill}`, "file-link-mindnote_outlined");
     }
     default:
       return _renderStep(content.name, "setting-inter_outlined");

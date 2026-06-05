@@ -16,242 +16,164 @@ import {
   type WriteToolUseMessageContent,
 } from "@/shared";
 
-import type { Card, CollapsiblePanel, DivElement, ButtonElement } from "./types";
+import type { Card } from "./types";
 
 const MAX_FEISHU_CARD_ELEMENTS = 200;
 // eslint-disable-next-line no-unused-vars
 type UploadImageFn = (path: string) => Promise<string>;
 
-interface PhaseDef {
-  key: string;
-  label: string;
-  activeLabel: string;
-  iconToken: string;
-  // eslint-disable-next-line no-unused-vars
-  match: (name: string) => boolean;
-}
+/** Tool name → emoji + Chinese label */
+const TOOL_LABEL: Record<string, string> = {
+  Agent:      "🤖 子任务",
+  Task:       "🤖 子任务",
+  Bash:       "⚡ 执行命令",
+  Edit:       "✏️ 修改文件",
+  Write:      "✏️ 写入文件",
+  Read:       "📄 读取文件",
+  Glob:       "🔍 搜索文件",
+  Grep:       "📖 搜索内容",
+  WebSearch:  "🔍 搜索网络",
+  WebFetch:   "🌐 抓取网页",
+  Skill:      "🧩 加载技能",
+  ToolSearch: "🔎 搜索工具",
+};
 
-const PHASES: PhaseDef[] = [
-  {
-    key: "search",
-    label: "查找",
-    activeLabel: "查找中",
-    iconToken: "search_outlined",
-    match: (n) => ["WebSearch", "WebFetch", "Glob", "Grep", "Read"].includes(n),
-  },
-  {
-    key: "analyze",
-    label: "分析",
-    activeLabel: "分析中",
-    iconToken: "file-link-mindnote_outlined",
-    match: (n) => ["Agent", "Task"].includes(n),
-  },
-  {
-    key: "plan",
-    label: "规划",
-    activeLabel: "规划中",
-    iconToken: "file-link-bitable_outlined",
-    match: (n) => ["Skill", "ToolSearch"].includes(n),
-  },
-  {
-    key: "code",
-    label: "编码",
-    activeLabel: "编码中",
-    iconToken: "edit_outlined",
-    match: (n) => ["Edit", "Write"].includes(n),
-  },
-  {
-    key: "execute",
-    label: "执行",
-    activeLabel: "执行中",
-    iconToken: "computer_outlined",
-    match: (n) => ["Bash"].includes(n),
-  },
-];
-
-function _classifyToolName(toolName: string): string {
-  return PHASES.find((p) => p.match(toolName))?.key ?? "execute";
-}
-
-function _renderStep(text: string, iconToken: string): DivElement {
-  return {
-    tag: "div",
-    icon: { tag: "standard_icon", token: iconToken, color: "grey" },
-    text: {
-      tag: "plain_text",
-      text_color: "grey",
-      text_size: "notation",
-      content: text,
-    },
-  };
-}
-
-function _createStepFromTool(content: ToolUseMessageContent): DivElement {
+function toolSummary(content: ToolUseMessageContent): string {
   switch (content.name) {
-    case "Agent":
-    case "Task":
-      return _renderStep("Agent — 运行子智能体", "robot_outlined");
     case "Bash": {
       const bash = content as BashToolUseMessageContent;
-      return _renderStep(
-        `Bash — ${bash.input.description ?? bash.input.command?.substring(0, 60) ?? ""}`,
-        "computer_outlined",
-      );
+      return bash.input.description ?? bash.input.command?.substring(0, 60) ?? "";
     }
-    case "Edit": {
-      const edit = content as EditToolUseMessageContent;
-      return _renderStep(`Edit — ${edit.input.file_path}`, "edit_outlined");
-    }
-    case "Write": {
-      const write = content as WriteToolUseMessageContent;
-      return _renderStep(`Write — ${write.input.file_path}`, "edit_outlined");
-    }
-    case "Read": {
-      const read = content as ReadToolUseMessageContent;
-      return _renderStep(`Read — ${read.input.file_path}`, "file-link-bitable_outlined");
-    }
-    case "Glob": {
-      const glob = content as GlobToolUseMessageContent;
-      return _renderStep(`Glob — ${glob.input.pattern}`, "card-search_outlined");
-    }
-    case "Grep": {
-      const grep = content as GrepToolUseMessageContent;
-      return _renderStep(`Grep — ${grep.input.pattern}`, "doc-search_outlined");
-    }
-    case "WebSearch": {
-      const ws = content as WebSearchToolUseMessageContent;
-      return _renderStep(`WebSearch — ${ws.input.query}`, "search_outlined");
-    }
-    case "WebFetch": {
-      const wf = content as WebFetchToolUseMessageContent;
-      return _renderStep(`WebFetch — ${wf.input.url}`, "language_outlined");
-    }
-    case "Skill": {
-      const skill = content as SkillToolUseMessageContent;
-      return _renderStep(`Skill — ${skill.input.skill}`, "file-link-mindnote_outlined");
-    }
-    default:
-      return _renderStep(content.name, "setting-inter_outlined");
+    case "Edit": return (content as EditToolUseMessageContent).input.file_path;
+    case "Write": return (content as WriteToolUseMessageContent).input.file_path;
+    case "Read": return (content as ReadToolUseMessageContent).input.file_path;
+    case "Glob": return (content as GlobToolUseMessageContent).input.pattern;
+    case "Grep": return (content as GrepToolUseMessageContent).input.pattern;
+    case "WebSearch": return (content as WebSearchToolUseMessageContent).input.query;
+    case "WebFetch": return (content as WebFetchToolUseMessageContent).input.url;
+    case "Skill": return (content as SkillToolUseMessageContent).input.skill;
+    default: return content.name;
   }
 }
 
-function _createPhasePanel(
-  phase: PhaseDef,
-  isActive: boolean,
-  streaming: boolean,
-  stepElements: DivElement[],
-): CollapsiblePanel {
-  const stepCount = stepElements.length;
-  const showActive = streaming && isActive;
-
-  return {
-    tag: "collapsible_panel",
-    expanded: showActive,
-    border: {
-      color: showActive ? "blue-300" : "grey-300",
-      corner_radius: "6px",
-    },
-    vertical_spacing: "2px",
-    header: {
-      title: {
-        tag: "plain_text",
-        text_color: showActive ? "blue" : "grey",
-        text_size: "notation",
-        content: showActive
-          ? `${phase.activeLabel} ${stepCount}步`
-          : `${phase.label} ${stepCount}步`,
-      },
-      icon: {
-        tag: "standard_icon",
-        token: phase.iconToken,
-        color: showActive ? "blue" : "grey",
-      },
-      icon_position: "right",
-      icon_expanded_angle: 90,
-    },
-    elements: stepElements,
-  };
+/** Streaming status text. */
+function statusText(streaming: boolean, content: AssistantMessage["content"]): string {
+  if (!streaming) return "";
+  const last = content[content.length - 1];
+  if (!last) return "🤔 思考中…";
+  if (last.type === "tool_use") return `🧰 ${TOOL_LABEL[last.name] ?? last.name}`;
+  if (last.type === "text") return "✍️ 正在输出…";
+  return "🧠 正在思考…";
 }
 
 /**
- * Render assistant message content as a Feishu interactive card (CardKit 2.0).
+ * Render assistant message content as a Feishu interactive card.
+ * Uses a single collapsible panel with step-by-step div elements,
+ * enhanced with emoji labels and Chinese status text.
  */
 export async function renderMessageCard(
   messageContent: AssistantMessage["content"],
   {
     streaming,
     uploadImage,
-    sessionId,
   }: {
     streaming: boolean;
     sessionId?: string;
     uploadImage: UploadImageFn;
   },
 ): Promise<Card> {
-  const phaseSteps = new Map<string, DivElement[]>();
-  const phaseOrder: string[] = [];
-
-  for (const content of messageContent) {
-    if (content.type !== "tool_use") continue;
-    const step = _createStepFromTool(content);
-    const phaseKey = _classifyToolName(content.name);
-    if (!phaseSteps.has(phaseKey)) {
-      phaseSteps.set(phaseKey, []);
-      phaseOrder.push(phaseKey);
-    }
-    phaseSteps.get(phaseKey)!.push(step);
-  }
-
-  const toolCalls = messageContent.filter(
-    (c): c is ToolUseMessageContent => c.type === "tool_use",
-  );
-  const activePhaseKey = streaming
-    ? _classifyToolName(toolCalls[toolCalls.length - 1]?.name ?? "")
-    : null;
-
   const bodyElements: Card["body"]["elements"] = [];
 
-  for (const phaseKey of phaseOrder) {
-    const phase = PHASES.find((p) => p.key === phaseKey)!;
-    const steps = phaseSteps.get(phaseKey)!;
-    bodyElements.push(
-      _createPhasePanel(phase, phaseKey === activePhaseKey, streaming, steps),
-    );
+  // Initial/empty state
+  if (streaming && messageContent.length === 0) {
+    bodyElements.push({
+      tag: "div",
+      icon: { tag: "standard_icon", token: "more_outlined", color: "grey" },
+      text: { tag: "plain_text", content: "🤔 思考中…", text_color: "grey", text_size: "notation" },
+    });
   }
 
+  // Thinking blocks → collapsible panel
+  const thinkingTexts: string[] = [];
+  const toolSteps: Array<{ name: string; summary: string }> = [];
+
+  for (const c of messageContent) {
+    if (c.type === "thinking") {
+      const t = c.thinking.trim();
+      if (t) thinkingTexts.push(t);
+    } else if (c.type === "tool_use") {
+      toolSteps.push({ name: c.name, summary: toolSummary(c) });
+    } else if (c.type === "text" && c.text.trim() && !streaming) {
+      // Only show final text when streaming is done
+    }
+  }
+
+  // Thinking panel (merge all thinking into one)
+  if (thinkingTexts.length > 0) {
+    const merged = thinkingTexts.join("\n\n");
+    const truncated = merged.length > 1500 ? merged.slice(0, 1500) + "…" : merged;
+    bodyElements.push({
+      tag: "collapsible_panel",
+      expanded: false,
+      border: { color: "grey-300", corner_radius: "6px" },
+      vertical_spacing: "2px",
+      header: {
+        title: { tag: "plain_text", content: "🧠 思考", text_color: "grey", text_size: "notation" },
+        icon: { tag: "standard_icon", token: "right_outlined", color: "grey" },
+        icon_position: "right",
+        icon_expanded_angle: 90,
+      },
+      elements: [{ tag: "markdown", content: truncated, text_size: "notation" }],
+    });
+  }
+
+  // Tool steps
+  for (const step of toolSteps) {
+    const label = TOOL_LABEL[step.name] ?? `🛠️ ${step.name}`;
+    const text = step.summary ? `${label} — ${step.summary}` : label;
+    bodyElements.push({
+      tag: "div",
+      icon: { tag: "standard_icon", token: "right_outlined", color: "grey" },
+      text: { tag: "plain_text", content: text, text_color: "grey", text_size: "notation" },
+    });
+  }
+
+  // Streaming status
+  const status = statusText(streaming, messageContent);
+  if (status) {
+    bodyElements.push({
+      tag: "div",
+      icon: { tag: "standard_icon", token: "more_outlined", color: "grey" },
+      text: { tag: "plain_text", content: status, text_color: "grey", text_size: "notation" },
+    });
+  }
+
+  // Final answer text
   if (!streaming) {
     const lastText = messageContent.findLast((c) => c.type === "text");
     if (lastText) {
-      const markdown = await _uploadMessageResource(lastText.text, { uploadImage });
-      bodyElements.push({ tag: "markdown", content: markdown });
+      const md = await _uploadMessageResource(lastText.text, { uploadImage });
+      bodyElements.push({ tag: "markdown", content: md });
     }
   }
 
+  // Empty-body fallback
   if (bodyElements.length === 0) {
     bodyElements.push({ tag: "div", text: { tag: "plain_text", content: "" } });
   }
 
-  if (streaming) {
-    if (sessionId) {
-      bodyElements.push({
-        tag: "button",
-        text: { tag: "plain_text", content: "中止", text_color: "white" },
-        type: "danger",
-        value: { action: "stop_task", session_id: sessionId },
-      } as ButtonElement);
+  // Summary
+  const summary = (() => {
+    if (!streaming) {
+      const t = messageContent.findLast((c) => c.type === "text");
+      if (t?.type === "text") {
+        const clean = t.text.replace(/!\[.*?\]\(.*?\)/g, "").trim();
+        if (clean) return clean.length > 50 ? clean.slice(0, 50) + "…" : clean;
+      }
+      return "已完成";
     }
-    bodyElements.push({
-      tag: "div",
-      icon: { tag: "standard_icon", token: "more_outlined", color: "grey" },
-    });
-  }
-
-  const totalSteps = toolCalls.length;
-  const summary = streaming && activePhaseKey
-    ? `${PHASES.find((p) => p.key === activePhaseKey)!.activeLabel} ${totalSteps}步`
-    : totalSteps > 0
-      ? `完成 ${totalSteps}步`
-      : "";
+    return statusText(true, messageContent);
+  })();
 
   const card: Card = {
     schema: "2.0",
@@ -261,18 +183,10 @@ export async function renderMessageCard(
       enable_forward_interaction: true,
       update_multi: true,
       width_mode: "fill",
-      summary: { content: summary },
+      summary: typeof summary === "object" ? { content: "" } : { content: summary },
     },
     body: { elements: bodyElements },
   };
-
-  if (!streaming) {
-    const lastText = messageContent.findLast((c) => c.type === "text");
-    if (lastText) {
-      const clean = lastText.text.replace(/!\[.*?\]\(.*?\)/g, "").substring(0, 150).trim();
-      if (clean) card.config!.summary.content = clean;
-    }
-  }
 
   _trimCardElements(card);
   return card;
@@ -280,15 +194,10 @@ export async function renderMessageCard(
 
 function _trimCardElements(card: Card) {
   let count = _countElements(card);
-  const panels = card.body.elements.filter(
-    (e): e is CollapsiblePanel => e.tag === "collapsible_panel",
-  );
-  if (panels.length === 0 || count <= MAX_FEISHU_CARD_ELEMENTS) return;
-  for (const panel of panels) {
-    while (panel.elements.length > 0 && count > MAX_FEISHU_CARD_ELEMENTS) {
-      const removed = panel.elements.shift();
-      if (removed) count -= _countElements(removed);
-    }
+  if (card.body.elements.length === 0 || count <= MAX_FEISHU_CARD_ELEMENTS) return;
+  while (card.body.elements.length > 0 && count > MAX_FEISHU_CARD_ELEMENTS) {
+    const removed = card.body.elements.shift()!;
+    count -= _countElements(removed);
   }
 }
 

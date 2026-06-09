@@ -127,15 +127,47 @@ export async function renderMessageCard(
     });
   }
 
-  // Tool steps
-  for (const step of toolSteps) {
-    const label = TOOL_LABEL[step.name] ?? `🛠️ ${step.name}`;
-    const text = step.summary ? `${label} — ${step.summary}` : label;
-    bodyElements.push({
-      tag: "div",
-      icon: { tag: "standard_icon", token: "right_outlined", color: "grey" },
-      text: { tag: "plain_text", content: text, text_color: "grey", text_size: "notation" },
-    });
+  // Tool steps — merge consecutive same-type into collapsible
+  let i = 0;
+  while (i < toolSteps.length) {
+    const { name: curName, summary: curSummary } = toolSteps[i]!;
+
+    // Count consecutive same-type steps
+    let j = i + 1;
+    while (j < toolSteps.length && toolSteps[j]!.name === curName) j++;
+    const count = j - i;
+
+    const label = TOOL_LABEL[curName] ?? `🛠️ ${curName}`;
+
+    if (count === 1) {
+      // Single step → simple div
+      const text = curSummary ? `${label} — ${curSummary}` : label;
+      bodyElements.push({
+        tag: "div",
+        icon: { tag: "standard_icon", token: "right_outlined", color: "grey" },
+        text: { tag: "plain_text", content: text, text_color: "grey", text_size: "notation" },
+      });
+    } else {
+      // Multiple consecutive same-type steps → collapsible panel
+      const summaries = toolSteps.slice(i, j).map((s) => s.summary).filter(Boolean);
+      const headerText = count > 1 ? `${label}（${count}次）` : label;
+      const details = summaries.map((s, idx) => `${idx + 1}. ${s}`).join("\n");
+      bodyElements.push({
+        tag: "collapsible_panel",
+        expanded: false,
+        border: { color: "grey-300", corner_radius: "6px" },
+        vertical_spacing: "2px",
+        header: {
+          title: { tag: "plain_text", content: headerText, text_color: "grey", text_size: "notation" },
+          icon: { tag: "standard_icon", token: "right_outlined", color: "grey" },
+          icon_position: "right",
+          icon_expanded_angle: 90,
+        },
+        elements: [{ tag: "markdown", content: details, text_size: "notation" }],
+      });
+    }
+
+    i = j;
   }
 
   // Streaming status

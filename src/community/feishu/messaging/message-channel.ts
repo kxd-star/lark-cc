@@ -102,6 +102,31 @@ export class FeishuMessageChannel
       // eslint-disable-next-line no-unused-vars, @typescript-eslint/no-explicit-any
       } as Record<string, (data: any) => void | Promise<void>>),
     });
+    this._startConnectionMonitor();
+  }
+
+  /** Periodically check and log WebSocket connection health. */
+  private _connectionMonitorTimer: ReturnType<typeof setInterval> | undefined;
+  private _lastWsState: string | undefined;
+
+  private _startConnectionMonitor(): void {
+    const check = () => {
+      try {
+        const info = this._inboundClient.getReconnectInfo();
+        const nextIn = info.nextConnectTime
+          ? Math.max(0, info.nextConnectTime - Date.now())
+          : 0;
+        const state = nextIn > 0 ? `reconnecting (next attempt in ${Math.round(nextIn / 1000)}s)` : "connected";
+        if (state !== this._lastWsState) {
+          this._lastWsState = state;
+          this._logger.info({ reconnect_info: info }, `WebSocket state: ${state}`);
+        }
+      } catch {
+        // getReconnectInfo may throw if WS not fully initialized
+      }
+    };
+    check();
+    this._connectionMonitorTimer = setInterval(check, 30_000);
   }
 
   /** Reply to a message in a Feishu chat thread. */

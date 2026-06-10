@@ -8,6 +8,10 @@ Then read `USER.md` to recall who the user is, his preferences, ongoing context,
 
 @memory/USER.md
 
+Then read `context.md` for per-source conversation memory and recent context.
+
+@memory/context.md
+
 # CLAUDE.md
 
 ## Capabilities
@@ -23,10 +27,11 @@ Then read `USER.md` to recall who the user is, his preferences, ongoing context,
 ├── .claude/               # Claude/Cursor configuration
 │   ├── skills/            # Your skills (one folder per skill); Newly added skills should be placed here.
 │   └── CLAUDE.md          # This file; workspace rules and conventions
-├── memory/                # Session-loaded context (keep SOUL.md, USER.md under 1000 tokens each)
-|   ├── logs/              # Daily dialogue logs, `{YYYY-MM-DD}.md`
-│   ├── SOUL.md            # Your identity, principles, capabilities
-│   └── USER.md            # User preferences, context, history
+├── memory/                # Session-loaded context (keep SOUL.md, USER.md, context.md under 1000 tokens each)
+|   ├── logs/              # Daily dialogue logs, `{source}/{YYYY-MM-DD}.md`
+│   ├── SOUL.md            # Your identity, principles, capabilities (shared across sources)
+│   ├── USER.md            # User preferences, general info (shared)
+│   └── context.md         # Per-source conversation memory (auto-swapped by kernel)
 └── workspace/             # Workspace root. All your work and outputs should be stored here.
     ├── wikis/             # Knowledge base (Obsidian-style; see wiki skill)
     ├── projects/          # Git repos and code projects
@@ -35,7 +40,7 @@ Then read `USER.md` to recall who the user is, his preferences, ongoing context,
 ```
 
 > Create if not exists. Create subdirectories as needed.
-> The SOUL.md and USER.md files are already embedded in the session context. So you don't need to read them again.
+> The SOUL.md, USER.md, and context.md files are already embedded in the session context. So you don't need to read them again.
 
 ### Conventions
 
@@ -44,11 +49,12 @@ Then read `USER.md` to recall who the user is, his preferences, ongoing context,
 
 ## Session End Protocol
 
-Before the session ends, **update `memory/USER.md`** and `memory/SOUL.md` if necessary:
+Before the session ends, **update `memory/context.md`** with key conversation context, decisions, and user preferences learned:
 
 - Memories and lessons you've learned are up-to-date with the latest context.
 - Important details are not forgotten across sessions.
 - Outdated or irrelevant information is cleaned up.
+- Do NOT include information from other sources (private chats mixing into group context, etc.).
 
 ## Writing Style for `memory/` Files
 
@@ -57,7 +63,7 @@ Dense, telegraphic short sentences. No filler words ("You are", "You should", "Y
 ## Notes
 
 - All UPPERCASE `.md` files under `memory/` (e.g., `SOUL.md`, `USER.md`) **must be written in English**, except for user-language-specific proper nouns, names, or terms that lose meaning in translation.
-- `SOUL.md` and `USER.md` are loaded into context every session. **Keep each file under 1000 tokens.** Be ruthless about deduplication and conciseness. Move detailed or archival information to separate files under `memory/` if needed.
+- `SOUL.md`, `USER.md`, and `context.md` are loaded into context every session. **Keep each file under 1000 tokens.** Be ruthless about deduplication and conciseness. Move detailed or archival information to separate files under `memory/` if needed.
 - The most important thing is that only the your last message in a ReAct loop can be seen by the user. So you should always provide a thorough response as your final answer.
 - Keep in mind that since most IM app only supports at most 3 tables in a message, you should limit the number of tables in your response to 3.
 - Use the skill `scheduled-tasks` to schedule tasks and run them at a specific time. Do NOT use your own cronjob implementation, like `CreateCron`.

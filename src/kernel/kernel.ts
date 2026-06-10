@@ -1,3 +1,6 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { FeishuMessageChannel } from "@/community/feishu";
 import * as feishuMessagingSchema from "@/community/feishu/messaging/data";
 import { DataConnection } from "@/data";
@@ -194,6 +197,48 @@ class Kernel {
     );
   };
 
+  private static readonly _CONTEXT_FILE = "context.md";
+
+  /**
+   * Swap in per-source context: reads `memory/<source>/context.md` and writes
+   * it to `memory/context.md` so the session's CLAUDE.md @import picks it up.
+   * Creates an empty file if the source file doesn't exist yet.
+   */
+  private _swapContextIn(source: string | undefined): void {
+    if (!source) return;
+    const contextPath = join(config.paths.memory, source, Kernel._CONTEXT_FILE);
+    const sharedPath = join(config.paths.memory, Kernel._CONTEXT_FILE);
+    let content = "";
+    if (existsSync(contextPath)) {
+      content = readFileSync(contextPath, "utf-8");
+    }
+    writeFileSync(sharedPath, content, "utf-8");
+    this._logger.info(
+      { source },
+      `Swapped context into memory/context.md (${content.length} chars)`,
+    );
+  }
+
+  /**
+   * Swap out per-source context: reads the session's updated `memory/context.md`
+   * and persists it back to `memory/<source>/context.md`.
+   */
+  private _swapContextOut(source: string | undefined): void {
+    if (!source) return;
+    const sharedPath = join(config.paths.memory, Kernel._CONTEXT_FILE);
+    const contextPath = join(config.paths.memory, source, Kernel._CONTEXT_FILE);
+    if (!existsSync(sharedPath)) {
+      this._logger.warn({ source }, "context.md not found on swap-out");
+      return;
+    }
+    const content = readFileSync(sharedPath, "utf-8");
+    writeFileSync(contextPath, content, "utf-8");
+    this._logger.info(
+      { source },
+      `Swapped context back to memory/${source}/context.md (${content.length} chars)`,
+    );
+  }
+
   private _handleInboundMessageTask = async (
     taskId: string,
     sessionId: string,
@@ -223,6 +268,8 @@ class Kernel {
       },
     );
     contents = [];
+    // Swap in per-source context before spawning claude subprocess
+    this._swapContextIn(inboundMessage.source);
     const stream = await session.stream(inboundMessage, { signal });
     let lastMessage: AssistantMessage | undefined;
     for await (const message of stream) {
@@ -237,6 +284,8 @@ class Kernel {
         lastMessage = message;
       }
     }
+    // Persist context back after session completes
+    this._swapContextOut(inboundMessage.source);
     if (!lastMessage) {
       throw new Error("No assistant message received from the agent.");
     }

@@ -1,4 +1,8 @@
-import { config } from "@/shared";
+import { join } from "node:path";
+
+import dayjs from "dayjs";
+
+import { config, type UserMessage } from "@/shared";
 import type { Message } from "@/shared";
 
 import { appendFile, ensureFile, formatFileLine } from "./session-writer-utils";
@@ -9,12 +13,24 @@ interface QueuedItem {
 }
 
 /**
- * Appends messages to daily log file.
- * Cross-session. Uses internal queue for sequential writes.
+ * Appends messages to daily log file, partitioned by source (e.g. "p2p", "group").
+ * Messages with no source go to the default `logs/` directory.
+ * Uses internal queue for sequential writes.
  */
 export class SessionDailyLogWriter {
+  private readonly _source?: string;
+
+  constructor(source?: string) {
+    this._source = source;
+  }
+
   write(message: Message): void {
-    const path = config.paths.resolveDailyLogFilePath(new Date());
+    const source = message.role === "user"
+      ? ((message as UserMessage).source ?? this._source)
+      : this._source;
+    const dir = source ? `logs/${source}` : "logs";
+    const dateString = dayjs(new Date()).format("YYYY-MM-DD");
+    const path = join(config.paths.memory, dir, `${dateString}.md`);
     this._queue.push({ message, path });
     this._drain();
   }

@@ -46,6 +46,8 @@ export const UserMessage = BaseMessage.extend({
   role: z.literal("user"),
   /** The channel id this message originated from. */
   channel_id: z.string().optional(),
+  /** The source type of the conversation (e.g. "p2p", "group"). Used for log partitioning. */
+  source: z.string().optional(),
   content: z.array(
     z.discriminatedUnion("type", [
       TextMessageContent,

@@ -583,7 +583,7 @@ export class FeishuMessageChannel
     message: receivedMessage,
   }: MessageReceiveEventData) => {
     const { message_id: messageId, thread_id: threadId, chat_id: chatId, chat_type: chatType, parent_id } = receivedMessage;
-    const session_id = this._resolveSessionId(threadId, chatId, chatType);
+    const session_id = this._resolveSessionId(threadId, chatId);
 
     const parsedContent = await this._parseMessageContent(
       messageId,
@@ -615,6 +615,7 @@ export class FeishuMessageChannel
       id: messageId,
       session_id,
       role: "user",
+      source: `${chatType}_${chatId}`,
       content: [parsedContent],
     };
     this.emit("message:inbound", userMessage);
@@ -649,7 +650,7 @@ export class FeishuMessageChannel
   }
 
   /** Resolve a session ID, preferring thread/chat mapping, falling back to a new one. */
-  private _resolveSessionId(threadId: string | undefined, chatId?: string, chatType?: string): string {
+  private _resolveSessionId(threadId: string | undefined, chatId?: string): string {
     if (threadId) {
       if (this._threadIdToSessionId.has(threadId)) {
         return this._threadIdToSessionId.get(threadId)!;
@@ -664,8 +665,8 @@ export class FeishuMessageChannel
         return row.session_id;
       }
     }
-    // For p2p chats, use chat_id to maintain session continuity
-    if (chatType === "p2p" && chatId) {
+    // For p2p and group chats, use chat_id to maintain session continuity
+    if (chatId) {
       if (this._chatIdToSessionId.has(chatId)) {
         return this._chatIdToSessionId.get(chatId)!;
       }

@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$ProjectDir = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$ProjectDir = Split-Path -Parent $PSScriptRoot
 $HealthUrl = "http://localhost:1984/api/health"
 $CheckInterval = 60
 $LogFile = Join-Path $env:USERPROFILE ".agentara\watchdog.log"

@@ -47,7 +47,6 @@ export interface SessionResolveOptions {
  * database; message content is still appended to `.jsonl` files on disk.
  */
 export class SessionManager {
-  private readonly _diaryWriter = new SessionDailyLogWriter();
   private readonly _logger = createLogger("session-manager");
   private readonly _db: DrizzleDB;
 
@@ -139,7 +138,7 @@ export class SessionManager {
       cwd,
       runnerSessionId: undefined,
     });
-    this._attachWriter(session, sessionId);
+    this._attachWriter(session, sessionId, options?.firstMessage?.source);
 
     return session;
   }
@@ -314,9 +313,14 @@ export class SessionManager {
     };
   }
 
-  private _attachWriter(session: Session, sessionId: string): void {
+  private _attachWriter(
+    session: Session,
+    sessionId: string,
+    source?: string,
+  ): void {
     const fileWriter = new SessionJSONLWriter(sessionId);
     const logWriter = new SessionLogWriter(sessionId);
+    const diaryWriter = new SessionDailyLogWriter(source);
     session.on("message", (message) => {
       if (
         session.agentType === "codex" &&
@@ -327,7 +331,7 @@ export class SessionManager {
       }
       logWriter.write(message);
       fileWriter.write(message);
-      this._diaryWriter.write(message);
+      diaryWriter.write(message);
       this._updateLastMessageCreatedAt(sessionId);
     });
   }

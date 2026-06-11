@@ -47,10 +47,14 @@ class Kernel {
   private _registerShutdown(): void {
     const killClaude = () => {
       try {
-        Bun.spawnSync(["taskkill", "/F", "/IM", "claude.exe"], {});
+        if (process.platform === "win32") {
+          Bun.spawnSync(["taskkill", "/F", "/IM", "claude.exe"], {});
+        } else {
+          Bun.spawnSync(["pkill", "-9", "claude"], {});
+        }
         this._logger.info("killed orphaned Claude processes on shutdown");
       } catch {
-        // taskkill may fail if no claude processes exist
+        // may fail if no claude processes exist
       }
     };
     process.on("SIGTERM", killClaude);
@@ -213,6 +217,8 @@ class Kernel {
   };
 
   private static readonly _CONTEXT_FILE = "context.md";
+  private static readonly _LIVENESS_TIMEOUT_MS = 5 * 60 * 1000;
+  private static readonly _LIVENESS_CHECK_INTERVAL_MS = 30_000;
 
   /**
    * Swap in per-source context: reads `memory/<source>/context.md` and writes
@@ -286,31 +292,63 @@ class Kernel {
     contents = [];
     // Swap in per-source context before spawning claude subprocess
     this._swapContextIn(inboundMessage.source);
-    const stream = await session.stream(inboundMessage, { signal });
-    let lastMessage: AssistantMessage | undefined;
-    for await (const message of stream) {
-      if (message.role === "assistant") {
-        contents.push(...message.content);
-        await this._messageGateway.updateMessageContent(
-          { ...outboundMessage, content: contents },
-          {
-            streaming: true,
-          },
-        );
-        lastMessage = message;
+
+    // Liveness timeout: notify user if no output for 5 minutes
+    let lastActivity = Date.now();
+    let livenessNotified = false;
+    const livenessTimer = setInterval(async () => {
+      if (
+        Date.now() - lastActivity > Kernel._LIVENESS_TIMEOUT_MS &&
+        !livenessNotified
+      ) {
+        livenessNotified = true;
+        try {
+          await this._messageGateway.postMessage({
+            role: "assistant",
+            session_id: session.id,
+            content: [{ type: "text", text: "⏳ 执行中，请稍候…" }],
+          });
+        } catch {
+          // best-effort notification
+        }
       }
+    }, Kernel._LIVENESS_CHECK_INTERVAL_MS);
+
+    try {
+      const stream = await session.stream(inboundMessage, { signal });
+      for await (const message of stream) {
+        if (message.role === "assistant") {
+          contents.push(...message.content);
+          lastActivity = Date.now();
+          livenessNotified = false;
+          await this._messageGateway.updateMessageContent(
+            { ...outboundMessage, content: contents },
+            {
+              streaming: true,
+            },
+          );
+        }
+      }
+    } catch (err) {
+      if (signal?.aborted) {
+        this._logger.info(
+          { session_id: session.id },
+          "task aborted by user",
+        );
+      } else {
+        throw err;
+      }
+    } finally {
+      clearInterval(livenessTimer);
+      // Persist context back after session completes
+      this._swapContextOut(inboundMessage.source);
+      await this._messageGateway.updateMessageContent(
+        { ...outboundMessage, content: contents },
+        {
+          streaming: false,
+        },
+      );
     }
-    // Persist context back after session completes
-    this._swapContextOut(inboundMessage.source);
-    if (!lastMessage) {
-      throw new Error("No assistant message received from the agent.");
-    }
-    await this._messageGateway.updateMessageContent(
-      { ...outboundMessage, content: contents },
-      {
-        streaming: false,
-      },
-    );
   };
 
   private _handleScheduledTask = async (

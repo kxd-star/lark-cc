@@ -46,6 +46,7 @@ try {
 
         if ($process.HasExited) {
             Write-Log "Process exited (code: $($process.ExitCode)), restarting..."
+            Get-Process -Name "claude" -ErrorAction SilentlyContinue | Stop-Process -Force
             $process = Start-Agentara
             Write-Log "Agentara restarted (PID: $($process.Id))"
             continue
@@ -54,7 +55,9 @@ try {
         $healthy = Test-Health
         if (-not $healthy) {
             Write-Log "Health check failed, restarting..."
-            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            # Kill the entire process tree (bun + claude children) and any orphaned claude processes
+            taskkill /T /F /PID $process.Id -ErrorAction SilentlyContinue | Out-Null
+            Get-Process -Name "claude" -ErrorAction SilentlyContinue | Stop-Process -Force
             Start-Sleep -Seconds 3
             $process = Start-Agentara
             Write-Log "Agentara restarted (PID: $($process.Id))"

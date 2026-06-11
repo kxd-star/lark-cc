@@ -41,6 +41,21 @@ class Kernel {
     this._initTaskDispatcher();
     this._initMessageGateway();
     this._initServer();
+    this._registerShutdown();
+  }
+
+  private _registerShutdown(): void {
+    const killClaude = () => {
+      try {
+        Bun.spawnSync(["taskkill", "/F", "/IM", "claude.exe"], {});
+        this._logger.info("killed orphaned Claude processes on shutdown");
+      } catch {
+        // taskkill may fail if no claude processes exist
+      }
+    };
+    process.on("SIGTERM", killClaude);
+    process.on("SIGINT", killClaude);
+    process.on("exit", killClaude);
   }
 
   get database(): DataConnection {

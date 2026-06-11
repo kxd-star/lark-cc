@@ -77,16 +77,41 @@ export class HonoServer {
    *
    * Uses `AGENTARA_SERVICE_PORT` (default 1984) and
    * `AGENTARA_SERVICE_HOST` (default 0.0.0.0).
+   *
+   * Retries binding up to 5 times with 1s delay to handle
+   * TIME_WAIT from a prior instance of the same process.
    */
   async start(): Promise<void> {
     const port = parseInt(Bun.env.AGENTARA_SERVICE_PORT ?? "1984", 10);
     const hostname = Bun.env.AGENTARA_SERVICE_HOST ?? "0.0.0.0";
+    const maxRetries = 5;
+    const retryDelayMs = 1000;
 
-    this._server = Bun.serve({
-      fetch: this._app.fetch,
-      port,
-      hostname,
-    });
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        this._server = Bun.serve({
+          fetch: this._app.fetch,
+          port,
+          hostname,
+        });
+        break; // success
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (attempt < maxRetries) {
+          this._logger.warn(
+            { attempt, maxRetries, port, err: msg },
+            `Port ${port} bind failed, retrying in ${retryDelayMs}ms...`,
+          );
+          await new Promise((r) => setTimeout(r, retryDelayMs));
+        } else {
+          this._logger.error(
+            { port, err: msg },
+            `Port ${port} bind failed after ${maxRetries} attempts`,
+          );
+          throw err;
+        }
+      }
+    }
 
     this._logger.info(
       "HTTP server is running on http://" +

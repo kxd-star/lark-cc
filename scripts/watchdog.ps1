@@ -1,7 +1,8 @@
 $ErrorActionPreference = "Stop"
 
 $ProjectDir = Split-Path -Parent $PSScriptRoot
-$HealthUrl = "http://localhost:1984/api/health"
+$env:AGENTARA_SERVICE_PORT = if ($env:AGENTARA_SERVICE_PORT) { $env:AGENTARA_SERVICE_PORT } else { "1985" }
+$HealthUrl = "http://localhost:$env:AGENTARA_SERVICE_PORT/api/health"
 $CheckInterval = 60
 $LogFile = Join-Path $env:USERPROFILE ".agentara\watchdog.log"
 $Bun = Join-Path $env:USERPROFILE ".bun\bin\bun.exe"

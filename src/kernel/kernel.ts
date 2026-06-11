@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import { FeishuMessageChannel } from "@/community/feishu";
 import * as feishuMessagingSchema from "@/community/feishu/messaging/data";
@@ -232,6 +232,7 @@ class Kernel {
       return;
     }
     const content = readFileSync(sharedPath, "utf-8");
+    mkdirSync(dirname(contextPath), { recursive: true });
     writeFileSync(contextPath, content, "utf-8");
     this._logger.info(
       { source },

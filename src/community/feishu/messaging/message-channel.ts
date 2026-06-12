@@ -5,6 +5,14 @@ import { Client, EventDispatcher, WSClient } from "@larksuiteoapi/node-sdk";
 import { eq } from "drizzle-orm";
 import EventEmitter from "eventemitter3";
 
+import { renderCard } from "@/card/run-renderer";
+import {
+  initialState,
+  reduce,
+  finalizeIfRunning,
+  type RunState,
+  type AgentEvent,
+} from "@/card/run-state";
 import type { DrizzleDB } from "@/data";
 import type { Logger, TextMessageContent } from "@/shared";
 import {
@@ -19,7 +27,7 @@ import {
 } from "@/shared";
 
 import { feishuThreads } from "./data";
-import { renderMessageCard, splitMarkdownByTables } from "./message-renderer";
+import { splitMarkdownByTables, uploadMessageResource } from "./message-resource";
 import type { MessageReceiveEventData } from "./types";
 import { convertPostToMarkdown } from "./utils";
 
@@ -59,6 +67,8 @@ export class FeishuMessageChannel
   private _db: DrizzleDB;
   private _failedCardUpdateMessages = new Set<string>();
   private _logger: Logger;
+  private _messageRunStates = new Map<string, RunState>();
+  private _messageProcessedCount = new Map<string, number>();
 
   /**
    * Create a Feishu message channel.
@@ -135,18 +145,34 @@ export class FeishuMessageChannel
     message: Omit<AssistantMessage, "id">,
     { streaming = true }: { streaming?: boolean } = {},
   ): Promise<AssistantMessage> {
-    const { firstMessageContent, remainingChunks } = this._prepareMessageContent(
-      message.content,
-      streaming,
-    );
-
-    const card = await renderMessageCard(firstMessageContent, {
-      streaming,
-      sessionId: message.session_id,
-      uploadImage: this.uploadImage.bind(this),
-    });
+    // Clone content and process images for non-streaming final text
+    const content = [...message.content];
     if (!streaming) {
-      this._logOutboundMessage(message.session_id, message.content);
+      for (let i = 0; i < content.length; i++) {
+        const c = content[i];
+        if (c?.type === "text") {
+          content[i] = { ...c, text: await uploadMessageResource(c.text, { uploadImage: this.uploadImage.bind(this) }) };
+        }
+      }
+    }
+
+    // Build RunState from content
+    let state = initialState;
+    const events = this._contentToEvents(content, 0);
+    for (const evt of events) {
+      state = reduce(state, evt);
+    }
+    if (!streaming) {
+      state = finalizeIfRunning(state);
+    }
+
+    // Table splitting for large markdown (non-streaming only)
+    const { remainingChunks } = this._prepareMessageContent(content, streaming);
+
+    // Render card from RunState
+    const card = renderCard(state);
+    if (!streaming) {
+      this._logOutboundMessage(message.session_id, content);
     }
     const { data: replyMessage } = await this._client.im.message.reply({
       path: {
@@ -173,8 +199,14 @@ export class FeishuMessageChannel
     const assistantMessage = message as AssistantMessage;
     assistantMessage.id = replyMessage.message_id!;
 
+    // Save RunState for streaming updates
+    if (streaming) {
+      this._messageRunStates.set(assistantMessage.id, state);
+      this._messageProcessedCount.set(assistantMessage.id, content.length);
+    }
+
     if (!streaming) {
-      const lastText = message.content.filter((c) => c.type === "text").pop();
+      const lastText = content.filter((c) => c.type === "text").pop();
       if (lastText?.type === "text") {
         await this._sendLocalFileAttachments(
           assistantMessage.id,
@@ -189,17 +221,29 @@ export class FeishuMessageChannel
   async postMessage(
     message: Omit<AssistantMessage, "id">,
   ): Promise<AssistantMessage> {
-    const { firstMessageContent, remainingChunks } = this._prepareMessageContent(
-      message.content,
-      false,
-    );
+    // Process images in text blocks for final text
+    const content = [...message.content];
+    for (let i = 0; i < content.length; i++) {
+      const c = content[i];
+      if (c?.type === "text") {
+        content[i] = { ...c, text: await uploadMessageResource(c.text, { uploadImage: this.uploadImage.bind(this) }) };
+      }
+    }
 
-    const card = await renderMessageCard(firstMessageContent, {
-      streaming: false,
-      sessionId: message.session_id,
-      uploadImage: this.uploadImage.bind(this),
-    });
-    this._logOutboundMessage(message.session_id, message.content);
+    // Build and finalize RunState
+    let state = initialState;
+    const events = this._contentToEvents(content, 0);
+    for (const evt of events) {
+      state = reduce(state, evt);
+    }
+    state = finalizeIfRunning(state);
+
+    // Table splitting for large markdown
+    const { remainingChunks } = this._prepareMessageContent(content, false);
+
+    // Render card from RunState
+    const card = renderCard(state);
+    this._logOutboundMessage(message.session_id, content);
     const { data } = await this._client.im.message.create({
       params: {
         receive_id_type: "chat_id",
@@ -262,19 +306,49 @@ export class FeishuMessageChannel
       return;
     }
 
-    const { firstMessageContent, remainingChunks } = this._prepareMessageContent(
-      message.content,
-      streaming,
-    );
+    // Get or create RunState for this message
+    let state = this._messageRunStates.get(message.id) ?? initialState;
+    let processedCount = this._messageProcessedCount.get(message.id) ?? 0;
 
-    const card = await renderMessageCard(firstMessageContent, {
-      streaming,
-      sessionId: message.session_id,
-      uploadImage: this.uploadImage.bind(this),
-    });
-    if (!streaming) {
-      this._logOutboundMessage(message.session_id, message.content);
+    // Clone content and process images for final text
+    const content = [...message.content];
+
+    // If content was completely replaced (e.g. cancel/interrupt), reset state
+    if (content.length < processedCount) {
+      processedCount = 0;
+      state = initialState;
     }
+
+    if (!streaming) {
+      for (let i = 0; i < content.length; i++) {
+        const c = content[i];
+        if (c?.type === "text") {
+          content[i] = { ...c, text: await uploadMessageResource(c.text, { uploadImage: this.uploadImage.bind(this) }) };
+        }
+      }
+    }
+
+    // Process only new content blocks since last update
+    const events = this._contentToEvents(content, processedCount);
+    for (const evt of events) {
+      state = reduce(state, evt);
+    }
+    this._messageProcessedCount.set(message.id, content.length);
+
+    if (!streaming) {
+      state = finalizeIfRunning(state);
+    }
+
+    // Table splitting for large markdown (non-streaming only)
+    const { remainingChunks } = this._prepareMessageContent(content, streaming);
+
+    // Render card from RunState
+    const card = renderCard(state);
+
+    if (!streaming) {
+      this._logOutboundMessage(message.session_id, content);
+    }
+
     try {
       await this._client.im.message.patch({
         path: {
@@ -292,15 +366,26 @@ export class FeishuMessageChannel
           "Feishu card update failed with 400; sending fallback reply",
         );
         await this._replyUpdateFailureMessage(message.id);
+        // Clean up state even on failure
+        this._messageRunStates.delete(message.id);
+        this._messageProcessedCount.delete(message.id);
         return;
       }
       throw err;
     }
 
+    // Save or clean up state
+    if (streaming) {
+      this._messageRunStates.set(message.id, state);
+    } else {
+      this._messageRunStates.delete(message.id);
+      this._messageProcessedCount.delete(message.id);
+    }
+
     await this._sendRemainingChunks(message.id, remainingChunks);
 
     if (!streaming) {
-      const lastText = message.content.filter((c) => c.type === "text").pop();
+      const lastText = content.filter((c) => c.type === "text").pop();
       if (lastText?.type === "text") {
         await this._sendLocalFileAttachments(message.id, lastText.text);
       }
@@ -440,6 +525,34 @@ export class FeishuMessageChannel
   }
 
   /**
+   * Convert content blocks from a given start index to AgentEvent[] for RunState.
+   * Only processes text, thinking, and tool_use blocks (image_url is skipped).
+   */
+  private _contentToEvents(
+    content: AssistantMessage["content"],
+    startIdx: number,
+  ): AgentEvent[] {
+    const events: AgentEvent[] = [];
+    for (let i = startIdx; i < content.length; i++) {
+      const block = content[i];
+      if (!block) continue;
+      switch (block.type) {
+        case "text":
+          if (block.text.trim()) events.push({ type: "text", delta: block.text });
+          break;
+        case "thinking":
+          if (block.thinking.trim()) events.push({ type: "thinking", delta: block.thinking });
+          break;
+        case "tool_use":
+          events.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
+          break;
+        // image_url — skipped, not relevant for card rendering
+      }
+    }
+    return events;
+  }
+
+  /**
    * Prepare message content for sending, splitting if necessary due to table limits.
    * @param content - Original message content.
    * @param streaming - Whether the message is being streamed (skip splitting if true).
@@ -479,13 +592,11 @@ export class FeishuMessageChannel
     chunks: string[],
   ): Promise<void> {
     for (const chunkText of chunks) {
-      const chunkCard = await renderMessageCard(
-        [{ type: "text", text: chunkText }],
-        {
-          streaming: false,
-          uploadImage: this.uploadImage.bind(this),
-        },
-      );
+      const chunkCard = {
+        schema: "2.0",
+        config: { streaming_mode: true, update_multi: true, summary: { content: "" } },
+        body: { elements: [{ tag: "markdown", content: chunkText }] },
+      };
       await this._client.im.message.reply({
         path: {
           message_id: messageId,

@@ -58,6 +58,7 @@ export class FeishuMessageChannel
   private _client: Client;
   private _db: DrizzleDB;
   private _failedCardUpdateMessages = new Set<string>();
+  private _messageChatIds = new Map<string, string>();
   private _logger: Logger;
 
   /**
@@ -148,30 +149,27 @@ export class FeishuMessageChannel
     if (!streaming) {
       this._logOutboundMessage(message.session_id, message.content);
     }
-    const { data: replyMessage } = await this._client.im.message.reply({
-      path: {
-        message_id: messageId,
-      },
+
+    // Use create() instead of reply() so the message is independent —
+    // no quote of the original user message, and subsequent quotes
+    // of this message correctly point to the bot's reply, not the root.
+    const chatId = this._messageChatIds.get(messageId) ?? this.config.chatId;
+    const { data: createdMessage } = await this._client.im.message.create({
+      params: { receive_id_type: "chat_id" },
       data: {
+        receive_id: chatId,
         msg_type: "interactive",
         content: JSON.stringify(card),
-        reply_in_thread: false,
       },
     });
-    if (!replyMessage) {
+    if (!createdMessage) {
       throw new Error("Failed to reply message");
     }
 
-    const { thread_id: threadId } = replyMessage;
-    const sessionId = message.session_id;
-    if (threadId) {
-      this._mapThreadToSession(threadId, sessionId);
-    }
-
-    await this._sendRemainingChunks(replyMessage.message_id!, remainingChunks);
+    await this._sendRemainingChunks(createdMessage.message_id!, remainingChunks);
 
     const assistantMessage = message as AssistantMessage;
-    assistantMessage.id = replyMessage.message_id!;
+    assistantMessage.id = createdMessage.message_id!;
 
     if (!streaming) {
       const lastText = message.content.filter((c) => c.type === "text").pop();
@@ -608,6 +606,7 @@ export class FeishuMessageChannel
     message: receivedMessage,
   }: MessageReceiveEventData) => {
     const { message_id: messageId, thread_id: threadId, chat_id: chatId, chat_type: chatType, parent_id } = receivedMessage;
+    this._messageChatIds.set(messageId, chatId);
     const session_id = this._resolveSessionId(threadId, chatId);
 
     const parsedContent = await this._parseMessageContent(

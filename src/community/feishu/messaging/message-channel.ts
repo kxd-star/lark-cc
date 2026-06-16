@@ -18,7 +18,7 @@ import {
   type UserMessage,
 } from "@/shared";
 
-import { feishuThreads } from "./data";
+import { feishuParentReplies, feishuThreads } from "./data";
 import { renderMessageCard, splitMarkdownByTables } from "./message-renderer";
 import type { MessageReceiveEventData } from "./types";
 import { convertPostToMarkdown } from "./utils";
@@ -173,6 +173,15 @@ export class FeishuMessageChannel
     // Track this reply so when user later quotes the bot's card, we can find
     // the card message even if parent_id points to the thread root (user's original message)
     this._lastBotReplyByParent.set(messageId, replyResult.message_id!);
+    this._db
+      .insert(feishuParentReplies)
+      .values({
+        parent_id: messageId,
+        bot_reply_id: replyResult.message_id!,
+        created_at: Date.now(),
+      })
+      .onConflictDoNothing()
+      .run();
 
     const { thread_id: threadId } = replyResult;
     const sessionId = message.session_id;
@@ -643,8 +652,19 @@ export class FeishuMessageChannel
     let quotedText: string | null = null;
 
     if (parentId) {
-      // Check if bot has a tracked reply for this parent
-      const botReplyId = this._lastBotReplyByParent.get(parentId);
+      // Check if bot has a tracked reply for this parent (in-memory first, then DB)
+      let botReplyId = this._lastBotReplyByParent.get(parentId);
+      if (!botReplyId) {
+        const row = this._db
+          .select({ bot_reply_id: feishuParentReplies.bot_reply_id })
+          .from(feishuParentReplies)
+          .where(eq(feishuParentReplies.parent_id, parentId))
+          .get();
+        if (row) {
+          botReplyId = row.bot_reply_id;
+          this._lastBotReplyByParent.set(parentId, botReplyId);
+        }
+      }
       const fetchTargetId = botReplyId ?? parentId;
       this._logger.info(
         { parentId, botReplyId, fetchTargetId },

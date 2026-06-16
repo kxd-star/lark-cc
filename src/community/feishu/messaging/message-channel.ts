@@ -57,6 +57,7 @@ export class FeishuMessageChannel
   private _inboundClient: WSClient;
   private _client: Client;
   private _db: DrizzleDB;
+  private _lastChatId: string | null = null;
   private _failedCardUpdateMessages = new Set<string>();
   private _logger: Logger;
 
@@ -148,12 +149,13 @@ export class FeishuMessageChannel
     if (!streaming) {
       this._logOutboundMessage(message.session_id, message.content);
     }
+    const chatId = this._lastChatId ?? this.config.chatId;
     const { data } = await this._client.im.message.create({
       params: {
         receive_id_type: "chat_id",
       },
       data: {
-        receive_id: this.config.chatId,
+        receive_id: chatId,
         msg_type: "interactive",
         content: JSON.stringify(card),
       },
@@ -201,7 +203,7 @@ export class FeishuMessageChannel
         receive_id_type: "chat_id",
       },
       data: {
-        receive_id: this.config.chatId,
+        receive_id: this._lastChatId ?? this.config.chatId,
         msg_type: "interactive",
         content: JSON.stringify(card),
       },
@@ -604,6 +606,7 @@ export class FeishuMessageChannel
     message: receivedMessage,
   }: MessageReceiveEventData) => {
     const { message_id: messageId, thread_id: threadId, chat_id: chatId, chat_type: chatType, parent_id: parentId } = receivedMessage;
+    this._lastChatId = chatId;
     const session_id = this._resolveSessionId(threadId, chatId);
 
     const parsedContent = await this._parseMessageContent(

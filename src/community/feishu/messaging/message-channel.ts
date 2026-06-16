@@ -618,21 +618,40 @@ export class FeishuMessageChannel
       receivedMessage.content,
     );
 
-    // When user quotes a previous message, fetch the original content via API
+    // When user quotes/replies to a previous message, fetch the original content via API
     // so the bot can "see" what was quoted (cards don't serialize to text in post format)
+    this._logger.info(
+      { parentId, messageId, chatType, msgType: receivedMessage.message_type },
+      "Received message with parent context",
+    );
+
+    // Strategy: if parent_id is set (reply scenario), fetch the original message via API;
+    // also try to extract quote from post content as fallback (for text quotes)
     let finalContent = parsedContent;
+    let quotedText: string | null = null;
+
     if (parentId) {
-      const quotedText = await this._fetchQuotedText(parentId);
-      if (quotedText) {
-        const blockquote = quotedText
-          .split("\n")
-          .map((l) => `> ${l}`)
-          .join("\n");
-        finalContent = {
-          type: "text",
-          text: `${blockquote}\n\n---\n\n${parsedContent.text}`,
-        };
-      }
+      quotedText = await this._fetchQuotedText(parentId);
+    } else if (receivedMessage.message_type === "post") {
+      // For quote (引用) scenario without parent_id, try to extract quote from post content
+      quotedText = await this._extractQuoteFromPost(receivedMessage.content);
+    }
+
+    if (quotedText) {
+      const blockquote = quotedText
+        .split("\n")
+        .map((l) => `> ${l}`)
+        .join("\n");
+      finalContent = {
+        type: "text",
+        text: `${blockquote}\n\n---\n\n${parsedContent.text}`,
+      };
+      this._logger.info("Quoted text prepended to message content");
+    } else {
+      this._logger.warn(
+        { parentId, msgType: receivedMessage.message_type },
+        "No quoted text could be fetched",
+      );
     }
 
     const userMessage: UserMessage = {
@@ -756,13 +775,82 @@ export class FeishuMessageChannel
       const result = await this._client.im.message.get({
         path: { message_id: messageId },
       });
-      const item = result?.data?.items?.[0];
-      if (!item?.body?.content || !item?.msg_type) {
+
+      // Check API-level error code (200 HTTP but error in body)
+      if (result?.code && result.code !== 0) {
+        this._logger.warn(
+          { code: result.code, msg: result.msg, messageId },
+          "Feishu API returned error when fetching quoted message",
+        );
         return null;
       }
-      return await this._extractTextFromMsg(item.msg_type, item.body.content);
+
+      const item = result?.data?.items?.[0];
+      if (!item) {
+        this._logger.warn({ messageId }, "No message item found for quoted message");
+        return null;
+      }
+
+      if (!item.msg_type) {
+        this._logger.warn({ messageId, item }, "Quoted message has no msg_type");
+        return null;
+      }
+
+      // Try body.content first (SDK typed field), fall back to raw content
+      const itemContent = (item.body?.content ?? (item as Record<string, unknown>).content) as string | undefined;
+      if (!itemContent) {
+        this._logger.warn(
+          { messageId, msgType: item.msg_type, hasBody: !!item.body, itemKeys: Object.keys(item) },
+          "Quoted message has no content in either body.content or content",
+        );
+        return null;
+      }
+
+      return await this._extractTextFromMsg(item.msg_type, itemContent);
     } catch (err) {
       this._logger.warn({ err, messageId }, "Failed to fetch quoted message");
+      return null;
+    }
+  }
+
+  /**
+   * Try to extract quoted text from a post-type message content.
+   * Used when parent_id is not set (quote scenario via 引用).
+   * Feishu renders the quoted content as the first paragraph(s) of the post.
+   */
+  private async _extractQuoteFromPost(content: string): Promise<string | null> {
+    try {
+      const parsed = JSON.parse(content);
+      const postContent = parsed?.content as unknown[] | undefined;
+      if (!Array.isArray(postContent) || postContent.length < 2) return null;
+
+      // Log the first few paragraphs to understand quote structure
+      const firstPara = Array.isArray(postContent[0]) ? (postContent[0] as unknown[]) : [];
+      const unknownTags = new Set<string>();
+      const knownTags = new Set(["text", "a", "at", "img", "media", "emotion", "code_block", "hr", "md"]);
+      let firstParaText = "";
+
+      for (const el of firstPara) {
+        const elem = el as Record<string, unknown>;
+        if (elem?.tag && typeof elem.tag === "string" && !knownTags.has(elem.tag)) {
+          unknownTags.add(elem.tag);
+        }
+        if (elem?.text && typeof elem.text === "string") {
+          firstParaText += elem.text;
+        }
+      }
+
+      if (unknownTags.size > 0) {
+        this._logger.info(
+          { unknownTags: [...unknownTags], firstParaText },
+          "Unknown post element tags found - possible quote structure",
+        );
+      }
+
+      // If first paragraph has text (even just sender name), include it
+      return firstParaText.trim() || null;
+    } catch (err) {
+      this._logger.warn({ err }, "Failed to extract quote from post content");
       return null;
     }
   }
@@ -792,13 +880,23 @@ export class FeishuMessageChannel
         // Body elements
         const elements = card.body?.elements ?? card.elements ?? [];
         for (const el of elements) {
-          const text = el?.text?.content ?? el?.content;
+          // Try direct text.content, then el.content, then other common text fields
+          const text =
+            el?.text?.content ??
+            el?.content ??
+            (typeof el?.text === "string" ? el.text : null);
           if (typeof text === "string") {
             parts.push(text);
           }
         }
 
         const result = parts.join("\n").trim();
+        if (!result) {
+          this._logger.warn(
+            { msgType, cardKeys: Object.keys(card), hasHeader: !!head, elementCount: elements.length },
+            "Interactive card text extraction yielded empty result",
+          );
+        }
         return result || null;
       }
 

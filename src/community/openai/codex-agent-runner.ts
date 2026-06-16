@@ -27,6 +27,8 @@ export class AgentAbortError extends Error {
   }
 }
 
+const THINK_REGEX = /<think>([\s\S]*?)<\/think>/g;
+
 /**
  * The agent runner for OpenAI Codex CLI.
  *
@@ -236,14 +238,7 @@ export class CodexAgentRunner implements AgentRunner {
     switch (itemType) {
       case "agent_message": {
         if (eventType !== "item.completed") return [];
-        return [
-          {
-            id: itemId,
-            session_id: sessionId,
-            role: "assistant" as const,
-            content: [{ type: "text" as const, text: item.text ?? "" }],
-          },
-        ];
+        return this._mapAgentMessage(item.text ?? "", itemId, sessionId);
       }
 
       case "reasoning": {
@@ -464,6 +459,46 @@ export class CodexAgentRunner implements AgentRunner {
     }
 
     return undefined;
+  }
+
+  private _mapAgentMessage(
+    text: string,
+    itemId: string,
+    sessionId: string,
+  ): Array<AssistantMessage | ToolMessage | SystemMessage> {
+    const messages: Array<AssistantMessage | ToolMessage | SystemMessage> = [];
+    const thinks: string[] = [];
+    let match: RegExpExecArray | null;
+
+    THINK_REGEX.lastIndex = 0;
+
+    while ((match = THINK_REGEX.exec(text)) !== null) {
+      const thinkContent = match[1]!.trim();
+      if (thinkContent) {
+        thinks.push(thinkContent);
+      }
+    }
+
+    for (let i = 0; i < thinks.length; i++) {
+      messages.push({
+        id: `${itemId}-think-${i}`,
+        session_id: sessionId,
+        role: "assistant" as const,
+        content: [{ type: "thinking" as const, thinking: thinks[i]! }],
+      });
+    }
+
+    const cleanText = text.replace(THINK_REGEX, "").trim();
+    if (cleanText) {
+      messages.push({
+        id: itemId,
+        session_id: sessionId,
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: cleanText }],
+      });
+    }
+
+    return messages;
   }
 
   private _buildExecArgs({

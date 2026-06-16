@@ -58,7 +58,6 @@ export class FeishuMessageChannel
   private _client: Client;
   private _db: DrizzleDB;
   private _failedCardUpdateMessages = new Set<string>();
-  private _messageChatIds = new Map<string, string>();
   private _logger: Logger;
 
   /**
@@ -149,27 +148,30 @@ export class FeishuMessageChannel
     if (!streaming) {
       this._logOutboundMessage(message.session_id, message.content);
     }
-
-    // Use create() instead of reply() so the message is independent —
-    // no quote of the original user message, and subsequent quotes
-    // of this message correctly point to the bot's reply, not the root.
-    const chatId = this._messageChatIds.get(messageId) ?? this.config.chatId;
-    const { data: createdMessage } = await this._client.im.message.create({
-      params: { receive_id_type: "chat_id" },
+    const { data: replyResult } = await this._client.im.message.reply({
+      path: {
+        message_id: messageId,
+      },
       data: {
-        receive_id: chatId,
         msg_type: "interactive",
         content: JSON.stringify(card),
+        reply_in_thread: false,
       },
     });
-    if (!createdMessage) {
+    if (!replyResult) {
       throw new Error("Failed to reply message");
     }
 
-    await this._sendRemainingChunks(createdMessage.message_id!, remainingChunks);
+    const { thread_id: threadId } = replyResult;
+    const sessionId = message.session_id;
+    if (threadId) {
+      this._mapThreadToSession(threadId, sessionId);
+    }
+
+    await this._sendRemainingChunks(replyResult.message_id!, remainingChunks);
 
     const assistantMessage = message as AssistantMessage;
-    assistantMessage.id = createdMessage.message_id!;
+    assistantMessage.id = replyResult.message_id!;
 
     if (!streaming) {
       const lastText = message.content.filter((c) => c.type === "text").pop();
@@ -605,8 +607,7 @@ export class FeishuMessageChannel
   private _handleMessageReceive = async ({
     message: receivedMessage,
   }: MessageReceiveEventData) => {
-    const { message_id: messageId, thread_id: threadId, chat_id: chatId, chat_type: chatType, parent_id } = receivedMessage;
-    this._messageChatIds.set(messageId, chatId);
+    const { message_id: messageId, thread_id: threadId, chat_id: chatId, chat_type: chatType } = receivedMessage;
     const session_id = this._resolveSessionId(threadId, chatId);
 
     const parsedContent = await this._parseMessageContent(
@@ -614,26 +615,6 @@ export class FeishuMessageChannel
       receivedMessage.message_type,
       receivedMessage.content,
     );
-
-    // If the message is a reply to another message (引用会话), fetch the quoted message
-    if (parent_id) {
-      try {
-        const quoted = await this._client.im.v1.message.get({
-          path: { message_id: parent_id },
-        });
-        const quotedItem = quoted.data?.items?.[0];
-        if (quotedItem?.body?.content) {
-          const quotedText = await this._parseMessageContent(
-            parent_id,
-            quotedItem.msg_type ?? "text",
-            quotedItem.body.content,
-          );
-          parsedContent.text = `[引用消息]\n${quotedText.text}\n———\n${parsedContent.text}`;
-        }
-      } catch (err) {
-        this._logger.warn({ parent_id, err }, "Failed to fetch quoted message");
-      }
-    }
 
     const userMessage: UserMessage = {
       id: messageId,

@@ -890,23 +890,31 @@ export class FeishuMessageChannel
         const card = Array.isArray(parsed) ? parsed[0] : parsed;
         const parts: string[] = [];
 
-        // Header title
+        // Header title — try head/header (send format), then top-level title (API return format)
         const head = card.head ?? card.header;
         if (head?.title?.content) {
           parts.push(head.title.content);
+        } else if (card.title && typeof card.title === "string") {
+          parts.push(card.title);
         }
 
-        // Body elements
+        // Body elements — try body.elements (send format), then top-level elements (API format)
         const elements = card.body?.elements ?? card.elements ?? [];
+        let elementIdx = 0;
         for (const el of elements) {
-          // Try direct text.content, then el.content, then other common text fields
           const text =
             el?.text?.content ??
             el?.content ??
             (typeof el?.text === "string" ? el.text : null);
           if (typeof text === "string") {
             parts.push(text);
+          } else {
+            this._logger.warn(
+              { elementIdx, elementTag: el?.tag, elementKeys: Object.keys(el ?? {}) },
+              "Could not extract text from card element",
+            );
           }
+          elementIdx++;
         }
 
         const result = parts.join("\n").trim();

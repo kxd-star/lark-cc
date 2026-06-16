@@ -129,7 +129,7 @@ export class FeishuMessageChannel
     this._connectionMonitorTimer = setInterval(check, 30_000);
   }
 
-  /** Reply to a message in a Feishu chat thread. */
+  /** Reply to a message, sending as an independent message (no quote reference). */
   async replyMessage(
     messageId: string,
     message: Omit<AssistantMessage, "id">,
@@ -148,30 +148,26 @@ export class FeishuMessageChannel
     if (!streaming) {
       this._logOutboundMessage(message.session_id, message.content);
     }
-    const { data: replyResult } = await this._client.im.message.reply({
-      path: {
-        message_id: messageId,
+    const { data } = await this._client.im.message.create({
+      params: {
+        receive_id_type: "chat_id",
       },
       data: {
+        receive_id: this.config.chatId,
         msg_type: "interactive",
         content: JSON.stringify(card),
-        reply_in_thread: false,
       },
     });
-    if (!replyResult) {
-      throw new Error("Failed to reply message");
+    if (!data?.message_id) {
+      throw new Error("Failed to create message");
     }
 
-    const { thread_id: threadId } = replyResult;
-    const sessionId = message.session_id;
-    if (threadId) {
-      this._mapThreadToSession(threadId, sessionId);
-    }
+    const newMessageId = data.message_id;
 
-    await this._sendRemainingChunks(replyResult.message_id!, remainingChunks);
+    await this._sendRemainingChunks(newMessageId, remainingChunks);
 
     const assistantMessage = message as AssistantMessage;
-    assistantMessage.id = replyResult.message_id!;
+    assistantMessage.id = newMessageId;
 
     if (!streaming) {
       const lastText = message.content.filter((c) => c.type === "text").pop();
@@ -607,7 +603,7 @@ export class FeishuMessageChannel
   private _handleMessageReceive = async ({
     message: receivedMessage,
   }: MessageReceiveEventData) => {
-    const { message_id: messageId, thread_id: threadId, chat_id: chatId, chat_type: chatType } = receivedMessage;
+    const { message_id: messageId, thread_id: threadId, chat_id: chatId, chat_type: chatType, parent_id: parentId } = receivedMessage;
     const session_id = this._resolveSessionId(threadId, chatId);
 
     const parsedContent = await this._parseMessageContent(
@@ -616,12 +612,29 @@ export class FeishuMessageChannel
       receivedMessage.content,
     );
 
+    // When user quotes a previous message, fetch the original content via API
+    // so the bot can "see" what was quoted (cards don't serialize to text in post format)
+    let finalContent = parsedContent;
+    if (parentId) {
+      const quotedText = await this._fetchQuotedText(parentId);
+      if (quotedText) {
+        const blockquote = quotedText
+          .split("\n")
+          .map((l) => `> ${l}`)
+          .join("\n");
+        finalContent = {
+          type: "text",
+          text: `${blockquote}\n\n---\n\n${parsedContent.text}`,
+        };
+      }
+    }
+
     const userMessage: UserMessage = {
       id: messageId,
       session_id,
       role: "user",
       source: `${chatType}_${chatId}`,
-      content: [parsedContent],
+      content: [finalContent],
     };
     this.emit("message:inbound", userMessage);
   };
@@ -724,6 +737,80 @@ export class FeishuMessageChannel
     } else {
       this._logger.error(`Unsupported message type: ${type}`);
       return { type: "text", text: "Unsupported message type" + type };
+    }
+  }
+
+  /**
+   * Fetch a message by ID via Feishu API and extract its text content.
+   * Used when a user quotes a previous message, so the bot can "see"
+   * what was quoted (especially for cards whose content is lost in post format).
+   */
+  private async _fetchQuotedText(messageId: string): Promise<string | null> {
+    try {
+      const result = await this._client.im.message.get({
+        path: { message_id: messageId },
+      });
+      const item = result?.data?.items?.[0];
+      if (!item?.body?.content || !item?.msg_type) {
+        return null;
+      }
+      return await this._extractTextFromMsg(item.msg_type, item.body.content);
+    } catch (err) {
+      this._logger.warn({ err, messageId }, "Failed to fetch quoted message");
+      return null;
+    }
+  }
+
+  /**
+   * Extract readable text from a Feishu message body content string,
+   * handling text, interactive (card), and post formats.
+   */
+  private async _extractTextFromMsg(msgType: string, content: string): Promise<string | null> {
+    try {
+      const parsed = JSON.parse(content);
+      if (msgType === "text") {
+        return typeof parsed.text === "string" ? parsed.text.trim() : null;
+      }
+
+      if (msgType === "interactive") {
+        // Card format — may be single object or array
+        const card = Array.isArray(parsed) ? parsed[0] : parsed;
+        const parts: string[] = [];
+
+        // Header title
+        const head = card.head ?? card.header;
+        if (head?.title?.content) {
+          parts.push(head.title.content);
+        }
+
+        // Body elements
+        const elements = card.body?.elements ?? card.elements ?? [];
+        for (const el of elements) {
+          const text = el?.text?.content ?? el?.content;
+          if (typeof text === "string") {
+            parts.push(text);
+          }
+        }
+
+        const result = parts.join("\n").trim();
+        return result || null;
+      }
+
+      if (msgType === "post") {
+        // Post format — convert to markdown using existing logic
+        try {
+          return await convertPostToMarkdown(
+            parsed,
+            async () => "", // skip resource download for quoted content
+          );
+        } catch {
+          return null;
+        }
+      }
+
+      return null;
+    } catch {
+      return null;
     }
   }
 }

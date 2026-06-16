@@ -62,6 +62,13 @@ export class FeishuMessageChannel
   private _logger: Logger;
 
   /**
+   * Tracks bot reply message IDs keyed by the parent message ID they replied to.
+   * When user replies to a message, parent_id may point to the thread root (user's original message),
+   * not the bot's card. This map lets us find the actual bot card reply that the user is quoting.
+   */
+  private _lastBotReplyByParent = new Map<string, string>();
+
+  /**
    * Create a Feishu message channel.
    * @param config - Feishu app credentials (defaults to env vars).
    * @param db - Drizzle database instance for persisting thread-to-session mappings.
@@ -162,6 +169,10 @@ export class FeishuMessageChannel
     if (!replyResult) {
       throw new Error("Failed to reply message");
     }
+
+    // Track this reply so when user later quotes the bot's card, we can find
+    // the card message even if parent_id points to the thread root (user's original message)
+    this._lastBotReplyByParent.set(messageId, replyResult.message_id!);
 
     const { thread_id: threadId } = replyResult;
     const sessionId = message.session_id;
@@ -608,7 +619,7 @@ export class FeishuMessageChannel
   private _handleMessageReceive = async ({
     message: receivedMessage,
   }: MessageReceiveEventData) => {
-    const { message_id: messageId, thread_id: threadId, chat_id: chatId, chat_type: chatType, parent_id: parentId } = receivedMessage;
+    const { message_id: messageId, thread_id: threadId, chat_id: chatId, chat_type: chatType, parent_id: parentId, root_id: rootId } = receivedMessage;
     this._lastChatId = chatId;
     const session_id = this._resolveSessionId(threadId, chatId);
 
@@ -621,17 +632,25 @@ export class FeishuMessageChannel
     // When user quotes/replies to a previous message, fetch the original content via API
     // so the bot can "see" what was quoted (cards don't serialize to text in post format)
     this._logger.info(
-      { parentId, messageId, chatType, msgType: receivedMessage.message_type },
+      { parentId, rootId, messageId, chatType, msgType: receivedMessage.message_type },
       "Received message with parent context",
     );
 
-    // Strategy: if parent_id is set (reply scenario), fetch the original message via API;
-    // also try to extract quote from post content as fallback (for text quotes)
+    // Strategy: when user quotes/replies to a message, parent_id may point
+    // to the thread root (user's original message A), not the bot's card (B).
+    // Check _lastBotReplyByParent to find the actual bot card reply.
     let finalContent = parsedContent;
     let quotedText: string | null = null;
 
     if (parentId) {
-      quotedText = await this._fetchQuotedText(parentId);
+      // Check if bot has a tracked reply for this parent
+      const botReplyId = this._lastBotReplyByParent.get(parentId);
+      const fetchTargetId = botReplyId ?? parentId;
+      this._logger.info(
+        { parentId, botReplyId, fetchTargetId },
+        "Fetching quoted message",
+      );
+      quotedText = await this._fetchQuotedText(fetchTargetId);
     } else if (receivedMessage.message_type === "post") {
       // For quote (引用) scenario without parent_id, try to extract quote from post content
       quotedText = await this._extractQuoteFromPost(receivedMessage.content);

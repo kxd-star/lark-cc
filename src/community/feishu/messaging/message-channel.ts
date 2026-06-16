@@ -130,7 +130,7 @@ export class FeishuMessageChannel
     this._connectionMonitorTimer = setInterval(check, 30_000);
   }
 
-  /** Reply to a message, sending as an independent message (no quote reference). */
+  /** Reply to a message, establishing a reply chain so the user can quote it. */
   async replyMessage(
     messageId: string,
     message: Omit<AssistantMessage, "id">,
@@ -149,27 +149,30 @@ export class FeishuMessageChannel
     if (!streaming) {
       this._logOutboundMessage(message.session_id, message.content);
     }
-    const chatId = this._lastChatId ?? this.config.chatId;
-    const { data } = await this._client.im.message.create({
-      params: {
-        receive_id_type: "chat_id",
+    const { data: replyResult } = await this._client.im.message.reply({
+      path: {
+        message_id: messageId,
       },
       data: {
-        receive_id: chatId,
         msg_type: "interactive",
         content: JSON.stringify(card),
+        reply_in_thread: false,
       },
     });
-    if (!data?.message_id) {
-      throw new Error("Failed to create message");
+    if (!replyResult) {
+      throw new Error("Failed to reply message");
     }
 
-    const newMessageId = data.message_id;
+    const { thread_id: threadId } = replyResult;
+    const sessionId = message.session_id;
+    if (threadId) {
+      this._mapThreadToSession(threadId, sessionId);
+    }
 
-    await this._sendRemainingChunks(newMessageId, remainingChunks);
+    await this._sendRemainingChunks(replyResult.message_id!, remainingChunks);
 
     const assistantMessage = message as AssistantMessage;
-    assistantMessage.id = newMessageId;
+    assistantMessage.id = replyResult.message_id!;
 
     if (!streaming) {
       const lastText = message.content.filter((c) => c.type === "text").pop();

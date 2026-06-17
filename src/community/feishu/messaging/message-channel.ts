@@ -19,6 +19,7 @@ import {
 } from "@/shared";
 
 import { feishuParentReplies, feishuThreads } from "./data";
+import { feishuMessageTextCache, feishuParentReplies, feishuThreads } from "./data";
 import { renderMessageCard, splitMarkdownByTables } from "./message-renderer";
 import type { MessageReceiveEventData } from "./types";
 import { convertPostToMarkdown } from "./utils";
@@ -69,6 +70,13 @@ export class FeishuMessageChannel
   private _lastBotReplyByParent = new Map<string, string>();
 
   /**
+   * Caches text content of bot reply messages keyed by their message ID.
+   * Used when user quotes the bot's card, since Feishu API returns placeholder
+   * text for interactive/card messages via the GET endpoint.
+   */
+  private _botReplyTextCache = new Map<string, string>();
+
+  /**
    * Create a Feishu message channel.
    * @param config - Feishu app credentials (defaults to env vars).
    * @param db - Drizzle database instance for persisting thread-to-session mappings.
@@ -89,6 +97,7 @@ export class FeishuMessageChannel
     }
     this._db = db;
     this._logger = createLogger("feishu-message-channel");
+    this._loadBotReplyTextCache();
     this._inboundClient = new WSClient({
       appId: this.config.appId,
       appSecret: this.config.appSecret,
@@ -137,6 +146,28 @@ export class FeishuMessageChannel
     this._connectionMonitorTimer = setInterval(check, 30_000);
   }
 
+  /** Load cached bot reply text from DB into memory on startup. */
+  private _loadBotReplyTextCache(): void {
+    try {
+      const rows = this._db
+        .select({
+          message_id: feishuMessageTextCache.message_id,
+          text_content: feishuMessageTextCache.text_content,
+        })
+        .from(feishuMessageTextCache)
+        .all();
+      for (const row of rows) {
+        this._botReplyTextCache.set(row.message_id, row.text_content);
+      }
+      this._logger.info(
+        { count: rows.length },
+        "Loaded bot reply text cache from DB",
+      );
+    } catch (err) {
+      this._logger.warn({ err }, "Failed to load bot reply text cache from DB");
+    }
+  }
+
   /** Reply to a message, establishing a reply chain so the user can quote it. */
   async replyMessage(
     messageId: string,
@@ -173,15 +204,37 @@ export class FeishuMessageChannel
     // Track this reply so when user later quotes the bot's card, we can find
     // the card message even if parent_id points to the thread root (user's original message)
     this._lastBotReplyByParent.set(messageId, replyResult.message_id!);
+    const botReplyId = replyResult.message_id!;
+    this._lastBotReplyByParent.set(messageId, botReplyId);
     this._db
       .insert(feishuParentReplies)
       .values({
         parent_id: messageId,
         bot_reply_id: replyResult.message_id!,
+        bot_reply_id: botReplyId,
         created_at: Date.now(),
       })
       .onConflictDoNothing()
       .run();
+
+    // Cache the text content of this reply so quoting works (Feishu API
+    // returns placeholder text for interactive/card messages via GET).
+    const textParts = firstMessageContent
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text);
+    if (textParts.length > 0) {
+      const replyText = textParts.join("\n");
+      this._botReplyTextCache.set(botReplyId, replyText);
+      this._db
+        .insert(feishuMessageTextCache)
+        .values({
+          message_id: botReplyId,
+          text_content: replyText,
+          created_at: Date.now(),
+        })
+        .onConflictDoNothing()
+        .run();
+    }
 
     const { thread_id: threadId } = replyResult;
     const sessionId = message.session_id;
@@ -319,6 +372,29 @@ export class FeishuMessageChannel
     }
 
     await this._sendRemainingChunks(message.id, remainingChunks);
+
+    // Update text cache so quoting works for streamed cards. The initial
+    // replyMessage may have been sent with only a thinking block (no text),
+    // so this is where the real content gets cached.
+    const updateTextParts = firstMessageContent
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text);
+    if (updateTextParts.length > 0) {
+      const replyText = updateTextParts.join("\n");
+      this._botReplyTextCache.set(message.id, replyText);
+      this._db
+        .insert(feishuMessageTextCache)
+        .values({
+          message_id: message.id,
+          text_content: replyText,
+          created_at: Date.now(),
+        })
+        .onConflictDoUpdate({
+          target: feishuMessageTextCache.message_id,
+          set: { text_content: replyText },
+        })
+        .run();
+    }
 
     if (!streaming) {
       const lastText = message.content.filter((c) => c.type === "text").pop();
@@ -810,6 +886,25 @@ export class FeishuMessageChannel
    * what was quoted (especially for cards whose content is lost in post format).
    */
   private async _fetchQuotedText(messageId: string): Promise<string | null> {
+    // Check in-memory cache first (text stored at send time)
+    const cached = this._botReplyTextCache.get(messageId);
+    if (cached !== undefined) {
+      this._logger.info({ messageId }, "Using cached text for quoted message");
+      return cached;
+    }
+
+    // Check DB cache (survives restarts)
+    const dbRow = this._db
+      .select({ text_content: feishuMessageTextCache.text_content })
+      .from(feishuMessageTextCache)
+      .where(eq(feishuMessageTextCache.message_id, messageId))
+      .get();
+    if (dbRow) {
+      this._botReplyTextCache.set(messageId, dbRow.text_content);
+      return dbRow.text_content;
+    }
+
+    // Fall back to Feishu API (may return placeholder for interactive cards)
     try {
       const result = await this._client.im.message.get({
         path: { message_id: messageId },
@@ -936,6 +1031,8 @@ export class FeishuMessageChannel
           }
           elementIdx++;
         }
+        const extractedTexts = this._extractTextFromCardElements(elements);
+        parts.push(...extractedTexts);
 
         const result = parts.join("\n").trim();
         if (!result) {
@@ -963,5 +1060,53 @@ export class FeishuMessageChannel
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Recursively extract readable text from card elements.
+   * Handles both object-style elements ({tag, text: {content}}, {content}) and
+   * array-style elements (Feishu API compact format).
+   */
+  private _extractTextFromCardElements(elements: unknown[]): string[] {
+    const parts: string[] = [];
+
+    for (const el of elements) {
+      if (Array.isArray(el)) {
+        // Recurse into nested arrays (Feishu API compact format)
+        const nested = this._extractTextFromCardElements(el);
+        parts.push(...nested);
+        continue;
+      }
+
+      if (!el || typeof el !== "object") {
+        // Primitive values — include if string
+        if (typeof el === "string") parts.push(el);
+        continue;
+      }
+
+      const obj = el as Record<string, unknown>;
+
+      // Try common text-bearing fields
+      const text =
+        (obj.text != null && typeof obj.text === "object" ? (obj.text as Record<string, unknown>).content : undefined) ??
+        obj?.content ??
+        (typeof obj?.text === "string" ? obj.text : null);
+
+      if (typeof text === "string") {
+        parts.push(text);
+      } else {
+        // Still no text — check for nested element arrays (columns, sections)
+        // Some element types (column_set, collapsible_panel) have sub-elements
+        for (const key of Object.keys(obj)) {
+          const val = obj[key];
+          if (Array.isArray(val)) {
+            const nested = this._extractTextFromCardElements(val);
+            parts.push(...nested);
+          }
+        }
+      }
+    }
+
+    return parts;
   }
 }

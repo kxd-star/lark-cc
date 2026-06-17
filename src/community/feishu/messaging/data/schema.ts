@@ -32,3 +32,24 @@ export const feishuParentReplies = sqliteTable("feishu_parent_replies", {
   /** Epoch milliseconds when the mapping was created. */
   created_at: integer("created_at").notNull(),
 });
+
+
+/**
+ * Caches the plain-text content of bot reply messages (especially cards).
+ *
+ * Feishu API does not return actual content for interactive/card messages
+ * via GET /im/v1/messages/{id} - it returns a placeholder string instead.
+ * This table stores the text at send time so quoted replies can retrieve
+ * the original content without depending on the API read path.
+ *
+ * Rows are best-effort and inserted with ON CONFLICT DO NOTHING since
+ * the text is determined at send time and does not change.
+ */
+export const feishuMessageTextCache = sqliteTable("feishu_message_text_cache", {
+  /** The Feishu message ID (typically a bot's reply message). */
+  message_id: text("message_id").primaryKey(),
+  /** Plain text content extracted from the message at send time. */
+  text_content: text("text_content").notNull(),
+  /** Epoch milliseconds when the cache entry was created. */
+  created_at: integer("created_at").notNull(),
+});

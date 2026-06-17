@@ -18,7 +18,6 @@ import {
   type UserMessage,
 } from "@/shared";
 
-import { feishuParentReplies, feishuThreads } from "./data";
 import { feishuMessageTextCache, feishuParentReplies, feishuThreads } from "./data";
 import { renderMessageCard, splitMarkdownByTables } from "./message-renderer";
 import type { MessageReceiveEventData } from "./types";
@@ -203,14 +202,12 @@ export class FeishuMessageChannel
 
     // Track this reply so when user later quotes the bot's card, we can find
     // the card message even if parent_id points to the thread root (user's original message)
-    this._lastBotReplyByParent.set(messageId, replyResult.message_id!);
     const botReplyId = replyResult.message_id!;
     this._lastBotReplyByParent.set(messageId, botReplyId);
     this._db
       .insert(feishuParentReplies)
       .values({
         parent_id: messageId,
-        bot_reply_id: replyResult.message_id!,
         bot_reply_id: botReplyId,
         created_at: Date.now(),
       })
@@ -1015,22 +1012,6 @@ export class FeishuMessageChannel
 
         // Body elements — try body.elements (send format), then top-level elements (API format)
         const elements = card.body?.elements ?? card.elements ?? [];
-        let elementIdx = 0;
-        for (const el of elements) {
-          const text =
-            el?.text?.content ??
-            el?.content ??
-            (typeof el?.text === "string" ? el.text : null);
-          if (typeof text === "string") {
-            parts.push(text);
-          } else {
-            this._logger.warn(
-              { elementIdx, elementTag: el?.tag, elementKeys: Object.keys(el ?? {}) },
-              "Could not extract text from card element",
-            );
-          }
-          elementIdx++;
-        }
         const extractedTexts = this._extractTextFromCardElements(elements);
         parts.push(...extractedTexts);
 
